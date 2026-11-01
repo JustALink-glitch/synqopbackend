@@ -249,6 +249,20 @@ doesn't flood anyone. Everyone's Email / In-app choices are respected.
 Hosts that sleep between requests can set `SCHEDULER=off` and have a cron call
 `POST /v1/internal/run-jobs` with `Authorization: Bearer <CRON_SECRET>` every few minutes.
 
+## Sign-up, bot check and two-step sign-in
+
+- **Sign-up (R1.01)** goes through `POST /v1/auth/sign-up`, not straight to Supabase. The API checks the bot
+  check, creates an unconfirmed account (`generateLink` type `signup`) and emails the Synqop confirmation link.
+  It answers the same whether or not the email already has an account (that owner is emailed instead).
+  Turn **off** "Allow new users to sign up" in Supabase → Authentication → Sign In / Providers, so nobody can
+  skip the bot check by calling Supabase directly. Admin calls still work.
+- **Bot check:** Cloudflare Turnstile on sign-up and forgot password. Set `TURNSTILE_SECRET_KEY` here and
+  `VITE_TURNSTILE_SITE_KEY` on the web app; leave both empty locally to skip it.
+- **Two-step sign-in:** owners and admins can turn on an authenticator app (Supabase MFA, TOTP) in
+  Settings › Profile & password. Once someone has, every API request needs a session that passed the code
+  (`aal2`); a password-only session gets `403 mfa_required`. If someone loses their phone, remove their factor
+  in Supabase → Authentication → Users → the user → MFA factors.
+
 ## Request limits
 
 `src/lib/rate-limit.ts` limits how fast anyone can call the API (on unless `RATE_LIMIT=off`):
