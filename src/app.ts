@@ -9,6 +9,7 @@ import { HTTPException } from 'hono/http-exception'
 import { logger } from 'hono/logger'
 import { requestId } from 'hono/request-id'
 import { secureHeaders } from 'hono/secure-headers'
+import { rateLimit, type RateLimitOptions } from './lib/rate-limit.js'
 import type { LoadMembership, VerifyToken } from './lib/auth.js'
 import type { AuthAdmin } from './lib/auth-admin.js'
 import type { Sql } from './lib/db.js'
@@ -61,6 +62,8 @@ export interface AppDeps {
   /** Show internal error messages in responses. Never true in production. */
   exposeErrors?: boolean
   log?: boolean
+  /** Request limits (lib/rate-limit.ts). Off when unset; production turns them on in index.ts. */
+  rateLimit?: RateLimitOptions
 }
 
 export function createApp(deps: AppDeps) {
@@ -77,6 +80,8 @@ export function createApp(deps: AppDeps) {
       maxAge: 600,
     }),
   )
+  // After CORS, so the browser can read a 429.
+  if (deps.rateLimit) app.use(rateLimit(deps.rateLimit))
   // JSON bodies only; file uploads go straight to storage via signed URLs.
   app.use(bodyLimit({ maxSize: 1024 * 1024 }))
 

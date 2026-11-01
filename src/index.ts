@@ -42,6 +42,7 @@ const app = createApp({
   zoom,
   zoomBox,
   exposeErrors: env.NODE_ENV === 'development',
+  ...(env.RATE_LIMIT === 'on' && { rateLimit: { trustProxy: env.TRUST_PROXY } }),
 })
 
 const server = serve({ fetch: app.fetch, port: env.PORT }, ({ port }) => {

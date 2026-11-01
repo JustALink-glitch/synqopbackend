@@ -249,6 +249,25 @@ doesn't flood anyone. Everyone's Email / In-app choices are respected.
 Hosts that sleep between requests can set `SCHEDULER=off` and have a cron call
 `POST /v1/internal/run-jobs` with `Authorization: Bearer <CRON_SECRET>` every few minutes.
 
+## Request limits
+
+`src/lib/rate-limit.ts` limits how fast anyone can call the API (on unless `RATE_LIMIT=off`):
+
+| Rule | Limit | Counted per |
+|---|---|---|
+| Password reset requests | 10 / 15 min | IP |
+| One invitation link | 20 / 15 min | IP + link |
+| All invitation links | 200 / 15 min | IP |
+| Creating organisations | 5 / hour | signed-in person |
+| Reports, exports, data export, imports | 30 / 10 min | signed-in person |
+| Everything else | 600 / min | signed-in person (IP if not signed in) |
+| Ceiling on every request | 3,000 / min | IP |
+
+Signed-in requests count per person, so a training centre sharing one office IP isn't limited as one user.
+Over a limit the API answers `429 rate_limited` with `Retry-After`. Set `TRUST_PROXY=1` behind Render, Railway
+or Fly so the real caller's IP is used. Counters live in memory: fine for one instance; use Postgres or Redis
+before running several.
+
 ## Zoom (F1.07)
 
 With `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` and `ZOOM_REDIRECT_URL` set, an Owner or Admin connects the

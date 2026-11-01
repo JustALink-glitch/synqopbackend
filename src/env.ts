@@ -32,6 +32,10 @@ const EnvSchema = z.object({
   /** Reminders, digests and the 30-day deletion run every minute inside the API. "off" if an outside cron calls /v1/internal/run-jobs instead. */
   SCHEDULER: z.enum(['on', 'off']).default('on'),
   /** Optional: lets an outside cron call POST /v1/internal/run-jobs with "Authorization: Bearer <CRON_SECRET>". */
+  /** Request limits: "off" only for load tests. */
+  RATE_LIMIT: z.enum(['on', 'off']).default('on'),
+  /** Proxies in front of the API, used to find the caller's IP (Render, Railway, Fly: 1; local: 0). */
+  TRUST_PROXY: z.coerce.number().int().min(0).max(3).default(0),
   CRON_SECRET: z.string().min(24, 'CRON_SECRET must be at least 24 characters').optional(),
 })
 
