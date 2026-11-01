@@ -119,8 +119,8 @@ export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; z
     awaitJobs: true,
     sql,
     verifyToken: async (token) => {
-      const [kind, userId, email] = token.split(':')
-      return kind === 'user' && userId ? { userId, email: email ?? null } : null
+      const [kind, userId, email, aal] = token.split(':')
+      return kind === 'user' && userId ? { userId, email: email ?? null, aal: aal === 'aal2' ? 'aal2' : 'aal1' } : null
     },
     loadMembership: createMembershipLoader(sql),
     authAdmin: auth.admin,
@@ -134,7 +134,7 @@ export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; z
   return { app, auth, mail, files }
 }
 
-export const as = (userId: string, email: string) => `user:${userId}:${email}`
+export const as = (userId: string, email: string, aal: 'aal1' | 'aal2' = 'aal1') => `user:${userId}:${email}:${aal}`
 
 type Json = Record<string, unknown>
 

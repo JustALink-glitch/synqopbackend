@@ -45,6 +45,11 @@ export function requireAuth(deps: { verifyToken: VerifyToken; loadMembership: Lo
         ? new AppError(403, 'no_organisation', 'This account has not set up or joined an organisation yet.')
         : new AppError(403, 'access_ended', 'Your access to this organisation has ended. Contact your administrator.')
     }
+    // Two-step sign-in: once someone has turned it on, a password alone isn't enough. Checked on the server,
+    // so skipping the code screen in the browser doesn't help.
+    if (membership.mfaEnrolled && identity.aal !== 'aal2') {
+      throw new AppError(403, 'mfa_required', 'Enter the code from your authenticator app to continue.')
+    }
     // F1.11b: while deletion is scheduled people can read and download, but not change anything.
     // Owners can still export data, generate reports and cancel the deletion.
     if (membership.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && !READ_ONLY_ALLOWED.some((p) => c.req.path.startsWith(p))) {

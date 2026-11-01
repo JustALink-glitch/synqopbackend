@@ -32,8 +32,8 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())))
 
-function token(opts: { key?: CryptoKey; issuer?: string; audience?: string; expiresIn?: string } = {}) {
-  return new SignJWT({ email: 'ada@aliwa.org', role: 'authenticated' })
+function token(opts: { key?: CryptoKey; issuer?: string; audience?: string; expiresIn?: string; aal?: string } = {}) {
+  return new SignJWT({ email: 'ada@aliwa.org', role: 'authenticated', ...(opts.aal && { aal: opts.aal }) })
     .setProtectedHeader({ alg: 'ES256', kid: 'test-key' })
     .setSubject('user-1')
     .setIssuer(opts.issuer ?? `${baseUrl}/auth/v1`)
@@ -46,7 +46,12 @@ function token(opts: { key?: CryptoKey; issuer?: string; audience?: string; expi
 describe('createTokenVerifier', () => {
   it('accepts a token signed by the project key', async () => {
     const verify = createTokenVerifier(baseUrl)
-    expect(await verify(await token())).toEqual({ userId: 'user-1', email: 'ada@aliwa.org' })
+    expect(await verify(await token())).toEqual({ userId: 'user-1', email: 'ada@aliwa.org', aal: 'aal1' })
+  })
+
+  it('reads whether the session passed two-step sign-in', async () => {
+    expect(await createTokenVerifier(baseUrl)(await token({ aal: 'aal2' }))).toMatchObject({ aal: 'aal2' })
+    expect(await createTokenVerifier(baseUrl)(await token({ aal: 'aal1' }))).toMatchObject({ aal: 'aal1' })
   })
 
   it('rejects a token signed by another key', async () => {
