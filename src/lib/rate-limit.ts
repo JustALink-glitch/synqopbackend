@@ -34,6 +34,8 @@ const post = (method: string) => method === 'POST'
 export const defaultRules: Rule[] = [
   // Public endpoints: someone guessing reset requests or invitation links.
   { name: 'password-reset', limit: 10, windowMs: 15 * minute, perIp: true, match: (m, p) => post(m) && p.startsWith('/v1/auth/password-reset') },
+  // New accounts (R1.01).
+  { name: 'sign-up', limit: 10, windowMs: 60 * minute, perIp: true, match: (m, p) => post(m) && p.startsWith('/v1/auth/sign-up') },
   // Per link, so a class accepting invitations together from one office IP isn't blocked…
   { name: 'invitation-link', limit: 20, windowMs: 15 * minute, perIp: true, perPath: true, match: (_m, p) => p.startsWith('/v1/invitations/') },
   // …but one IP can't try thousands of links.

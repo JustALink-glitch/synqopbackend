@@ -164,5 +164,13 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer settings, photos and welcome (T9.01
     t.mail.sent.length = 0
     await runScheduledJobs(deps)
     expect(t.mail.sent.filter((m) => m.to === 'ngozi@aliwa.org')).toEqual([])
+
+    // F1.06: when admins hide flags from trainers, the digest leaves them out too (security review, Nov 2026).
+    await sql`update organisation_settings set flag_trainers_see = false`
+    await sql`delete from delivery_log where key like 'trainer_digest:%'`
+    await sql`delete from notifications`
+    await runScheduledJobs(deps)
+    expect(await sql`select 1 from notifications where event = 'participant_flagged'`).toHaveLength(0)
+    expect(t.mail.sent.filter((m) => m.to === 'ngozi@aliwa.org').map((m) => m.subject)).toEqual(['1 submission waiting for your grade'])
   })
 })

@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server'
 import { createApp } from './app.js'
 import { loadEnv } from './env.js'
+import { createTurnstileCheck } from './lib/human-check.js'
 import { createMembershipLoader, createTokenVerifier } from './lib/auth.js'
 import { createSupabaseAuthAdmin } from './lib/auth-admin.js'
 import { createSql } from './lib/db.js'
@@ -29,6 +30,10 @@ const zoom =
     : null
 const zoomBox = env.ZOOM_CLIENT_SECRET ? tokenBox(env.ZOOM_CLIENT_SECRET) : null
 
+if (env.NODE_ENV === 'production' && !env.TURNSTILE_SECRET_KEY) {
+  console.warn('TURNSTILE_SECRET_KEY is not set: sign-up and forgot password have no bot check.')
+}
+
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   appUrl: env.APP_URL,
@@ -42,6 +47,7 @@ const app = createApp({
   zoom,
   zoomBox,
   exposeErrors: env.NODE_ENV === 'development',
+  ...(env.TURNSTILE_SECRET_KEY && { humanCheck: createTurnstileCheck(env.TURNSTILE_SECRET_KEY) }),
   ...(env.RATE_LIMIT === 'on' && { rateLimit: { trustProxy: env.TRUST_PROXY } }),
 })
 

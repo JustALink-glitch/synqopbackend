@@ -36,6 +36,8 @@ const EnvSchema = z.object({
   RATE_LIMIT: z.enum(['on', 'off']).default('on'),
   /** Proxies in front of the API, used to find the caller's IP (Render, Railway, Fly: 1; local: 0). */
   TRUST_PROXY: z.coerce.number().int().min(0).max(3).default(0),
+  /** Cloudflare Turnstile secret (bot check on sign-up and forgot password). Unset = no check. */
+  TURNSTILE_SECRET_KEY: z.string().optional(),
   CRON_SECRET: z.string().min(24, 'CRON_SECRET must be at least 24 characters').optional(),
 })
 

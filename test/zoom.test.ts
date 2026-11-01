@@ -133,13 +133,27 @@ describe.skipIf(!TEST_DATABASE_URL)('Zoom (F1.07, C1.02, C2.01, C2.04)', () => {
     expect(((await get('/v1/settings/attendance')).body.settings as { zoom: unknown }).zoom).toMatchObject({ available: true, connected: false })
     const { url } = (await post('/v1/zoom/connect', {})).body as { url: string }
     const state = new URL(url).searchParams.get('state')!
-    // Tampered or missing state, or a refused code, never connects.
-    expect((await t.app.request(`/v1/zoom/callback?code=good-code&state=${state}x`)).headers.get('location')).toBe('http://localhost:5173/admin/settings/attendance?zoom=error')
+    // Zoom's redirect only hands the code to the settings page; nothing is saved yet.
     expect((await t.app.request(`/v1/zoom/callback?error=access_denied`)).headers.get('location')).toMatch(/zoom=cancelled$/)
-    expect((await t.app.request(`/v1/zoom/callback?code=bad&state=${encodeURIComponent(state)}`)).headers.get('location')).toMatch(/zoom=error$/)
-    const ok = await t.app.request(`/v1/zoom/callback?code=good-code&state=${encodeURIComponent(state)}`)
-    expect(ok.status).toBe(302)
-    expect(ok.headers.get('location')).toBe('http://localhost:5173/admin/settings/attendance?zoom=connected')
+    expect((await t.app.request(`/v1/zoom/callback?state=x`)).headers.get('location')).toMatch(/zoom=error$/)
+    const back = await t.app.request(`/v1/zoom/callback?code=good-code&state=${encodeURIComponent(state)}`)
+    expect(back.status).toBe(302)
+    const finish = new URL(back.headers.get('location')!)
+    expect(finish.pathname + '?zoom=' + finish.searchParams.get('zoom')).toBe('/admin/settings/attendance?zoom=finish')
+    expect(finish.searchParams.get('code')).toBe('good-code')
+    expect(await sql`select 1 from zoom_connections`).toHaveLength(0)
+    // Tampered state, or a refused code, never connects.
+    expect((await post('/v1/zoom/complete', { code: 'good-code', state: `${state}x` })).body.error!.code).toBe('zoom_state_invalid')
+    expect((await post('/v1/zoom/complete', { code: 'bad', state })).body.error!.code).toBe('zoom_connect_failed')
+    // Someone else (another organisation's owner) can't finish an approval this admin started (CSRF).
+    const other = { id: randomUUID(), email: 'owner@other.org' }
+    await sql`insert into auth.users (id, email) values (${other.id}, ${other.email})`
+    await req('POST', '/v1/organisations', { token: as(other.id, other.email), body: { organisationName: 'Other Org', fullName: 'Oth Er' } })
+    expect((await req('POST', '/v1/zoom/complete', { token: as(other.id, other.email), body: { code: 'good-code', state } })).body.error!.code).toBe('zoom_state_invalid')
+    // The admin who started it can.
+    const ok = await post('/v1/zoom/complete', { code: 'good-code', state })
+    expect(ok.status).toBe(200)
+    expect(ok.body).toEqual({ connected: true, email: 'zoom@aliwa.org' })
     const [conn] = await sql<{ refresh_token_enc: string; zoom_user_email: string }[]>`select refresh_token_enc, zoom_user_email from zoom_connections`
     expect(conn!.refresh_token_enc).not.toContain('refresh-1')
     expect(box.open(conn!.refresh_token_enc)).toBe('refresh-1')

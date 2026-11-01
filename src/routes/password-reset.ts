@@ -3,8 +3,10 @@ import { z } from 'zod'
 import type { AppDeps } from '../app.js'
 import { renderEmail } from '../lib/mailer.js'
 import { email, parseBody } from '../lib/validation.js'
+import { allowAll } from '../lib/human-check.js'
+import { captchaFailed } from './sign-up.js'
 
-const Request = z.object({ email })
+const Request = z.object({ email, captchaToken: z.string().optional() })
 
 /** Reset links last 1 hour (§05 Passwords; Supabase "Email OTP expiration" must stay at 3600). */
 export const RESET_LINK_TTL_MS = 60 * 60 * 1000
@@ -24,6 +26,7 @@ export function passwordResetRoutes(deps: AppDeps) {
 
   return new Hono().post('/', async (c) => {
     const body = await parseBody(c, Request)
+    if (!(await (deps.humanCheck ?? allowAll)(body.captchaToken))) throw captchaFailed()
     const at = now()
     const accepted = c.json({ sent: true }, 202)
 

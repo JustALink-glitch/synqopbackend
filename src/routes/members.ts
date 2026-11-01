@@ -492,6 +492,13 @@ export function memberRoutes(deps: AppDeps) {
       if (!member) throw notFound('Member not found.')
       if (member.role === 'owner' && member.id !== actorId) throw new AppError(409, 'owner', 'Only the owner can change their own details.')
       const emailChanged = body.email !== member.email
+      // Changing someone's sign-in email lets the new address reset their password, so only the owner may do it
+      // for another admin (security review, Nov 2026).
+      if (emailChanged && member.role === 'admin' && member.id !== actorId && c.var.auth.role !== 'owner') {
+        throw new AppError(403, 'owner_only', 'Only the owner can change another admin’s sign-in email.', [
+          { field: 'email', message: 'Only the owner can change another admin’s sign-in email.' },
+        ])
+      }
       if (emailChanged) {
         const [taken] = await deps.sql`select 1 from public.organisation_members where email = ${body.email} and id <> ${member.id}`
         if (taken) throw new AppError(409, 'email_in_use', 'This email is already in use on Synqop.', [{ field: 'email', message: 'This email is already in use on Synqop.' }])
@@ -517,6 +524,15 @@ export function memberRoutes(deps: AppDeps) {
           note: 'If you didn’t expect this, contact your programme team.',
         })
         await deps.mailer.send({ to: body.email, subject: 'Your Synqop sign-in email changed', text, html }).catch((e) => console.error('Email change notice failed', e))
+        // The old address is told too, so a change nobody expected is noticed.
+        const old = renderEmail({
+          title: 'Your sign-in email changed',
+          intro: `Hi ${member.first_name}, your programme team at ${org!.name} changed the email you sign in to Synqop with from ${member.email} to ${body.email}.`,
+          buttonLabel: 'Open Synqop',
+          buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
+          note: 'If you didn’t expect this, contact your programme team straight away.',
+        })
+        await deps.mailer.send({ to: member.email, subject: 'Your Synqop sign-in email changed', text: old.text, html: old.html }).catch((e) => console.error('Email change notice failed', e))
       }
       return c.json({ ok: true })
     })

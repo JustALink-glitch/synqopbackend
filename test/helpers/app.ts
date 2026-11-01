@@ -1,3 +1,4 @@
+import type { HumanCheck } from '../../src/lib/human-check.js'
 import { createApp } from '../../src/app.js'
 import { createMembershipLoader } from '../../src/lib/auth.js'
 import type { AuthAdmin } from '../../src/lib/auth-admin.js'
@@ -11,6 +12,7 @@ export function fakeAuthAdmin(sql: Sql) {
   const passwords = new Map<string, string>()
   const deleted: string[] = []
   const recoveryLinks: { email: string; redirectTo: string }[] = []
+  const signupLinks: { email: string; name: string; redirectTo: string }[] = []
   const admin: AuthAdmin = {
     async findUserIdByEmail(email) {
       const [row] = await sql<{ id: string }[]>`select id from auth.users where lower(email) = ${email.toLowerCase()}`
@@ -37,6 +39,14 @@ export function fakeAuthAdmin(sql: Sql) {
       await sql`update auth.users set email = ${email} where id = ${userId}`
       return { ok: true }
     },
+    async generateSignupLink({ email, password, name, redirectTo }) {
+      const [existing] = await sql`select 1 from auth.users where lower(email) = ${email.toLowerCase()}`
+      if (existing) return { ok: false, reason: 'email_exists' }
+      const [row] = await sql<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`
+      passwords.set(row!.id, password)
+      signupLinks.push({ email, name, redirectTo })
+      return { ok: true, link: `https://auth.example/verify?type=signup&token=fake&redirect_to=${encodeURIComponent(redirectTo)}` }
+    },
     async generateRecoveryLink(email, redirectTo) {
       const [row] = await sql`select id from auth.users where lower(email) = ${email.toLowerCase()}`
       if (!row) return null
@@ -44,7 +54,7 @@ export function fakeAuthAdmin(sql: Sql) {
       return `https://auth.example/verify?type=recovery&token=fake&redirect_to=${encodeURIComponent(redirectTo)}`
     },
   }
-  return { admin, passwords, deleted, recoveryLinks }
+  return { admin, passwords, deleted, recoveryLinks, signupLinks }
 }
 
 export function fakeMailer() {
@@ -99,7 +109,7 @@ export function fakeStorage() {
 /**
  * App wired to a real test database. Tokens are "user:<uuid>:<email>" so tests can act as anyone.
  */
-export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox } = {}) {
+export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox; humanCheck?: HumanCheck } = {}) {
   const auth = fakeAuthAdmin(sql)
   const mail = fakeMailer()
   const files = fakeStorage()
@@ -118,6 +128,7 @@ export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; z
     storage: files.storage,
     log: false,
     ...(options.now && { now: options.now }),
+    ...(options.humanCheck && { humanCheck: options.humanCheck }),
     ...(options.zoom && { zoom: options.zoom, zoomBox: options.zoomBox ?? null }),
   })
   return { app, auth, mail, files }

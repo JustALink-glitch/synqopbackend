@@ -74,7 +74,26 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer assign, edit, deactivate (B2.04–B
     expect(ok.status).toBe(200)
     expect((await detail()).member).toMatchObject({ firstName: 'Ngozi A.', email: 'ngozi.eze@aliwa.org', phone: '+234 802 555 0187' })
     expect(await sql`select email from auth.users where email = 'ngozi.eze@aliwa.org'`).toHaveLength(1)
-    expect(t.mail.sent.at(-1)).toMatchObject({ to: 'ngozi.eze@aliwa.org', subject: 'Your Synqop sign-in email changed' })
+    // Both the new and the old address are told.
+    expect(t.mail.sent.slice(-2).map((m) => m.to)).toEqual(['ngozi.eze@aliwa.org', 'ngozi@aliwa.org'])
+    expect(t.mail.sent.at(-1)).toMatchObject({ subject: 'Your Synqop sign-in email changed' })
+  })
+
+  it('lets only the owner change another admin’s sign-in email (security review)', async () => {
+    const admin = async (email: string, name: string) => {
+      const id = ((await req('POST', '/v1/members', { token, body: { email, fullName: name, role: 'admin' } })).body.member as { id: string }).id
+      await req('POST', `/v1/invitations/${t.mail.lastToken(email)}/accept`, { body: { password: 'a-strong-password' } })
+      const [u] = await sql<{ user_id: string }[]>`select user_id from organisation_members where id = ${id}`
+      return { id, token: as(u!.user_id, email) }
+    }
+    const kemi = await admin('kemi@aliwa.org', 'Kemi Bello')
+    const femi = await admin('femi@aliwa.org', 'Femi Ade')
+    const takeover = await req('PATCH', `/v1/members/${femi.id}`, { token: kemi.token, body: { fullName: 'Femi Ade', email: 'kemi.personal@example.com', phone: null } })
+    expect(takeover.status).toBe(403)
+    expect(takeover.body.error!.code).toBe('owner_only')
+    // Their name and phone are still editable, and the owner can change the email.
+    expect((await req('PATCH', `/v1/members/${femi.id}`, { token: kemi.token, body: { fullName: 'Femi Adeyemi', email: 'femi@aliwa.org', phone: null } })).status).toBe(200)
+    expect((await req('PATCH', `/v1/members/${femi.id}`, { token, body: { fullName: 'Femi Adeyemi', email: 'femi.a@aliwa.org', phone: null } })).status).toBe(200)
   })
 
   it('deactivates and reactivates (B2.06)', async () => {

@@ -15,6 +15,13 @@ export interface AuthAdmin {
   generateRecoveryLink(email: string, redirectTo: string): Promise<string | null>
   /** B2.05: change someone's sign-in email (an admin change; the new address is told separately). */
   updateEmail(userId: string, email: string): Promise<{ ok: true } | { ok: false; reason: 'email_exists' }>
+  /** R1.01: create an unconfirmed account and return its confirmation link. Sends nothing. */
+  generateSignupLink(input: {
+    email: string
+    password: string
+    name: string
+    redirectTo: string
+  }): Promise<{ ok: true; link: string } | { ok: false; reason: 'email_exists' | 'weak_password' }>
 }
 
 export function createSupabaseAuthAdmin(supabase: SupabaseClient, sql: Sql): AuthAdmin {
@@ -63,6 +70,21 @@ export function createSupabaseAuthAdmin(supabase: SupabaseClient, sql: Sql): Aut
         throw error
       }
       return { ok: true }
+    },
+
+    async generateSignupLink({ email, password, name, redirectTo }) {
+      const { data, error } = await supabase.auth.admin.generateLink({
+        type: 'signup',
+        email,
+        password,
+        options: { redirectTo, data: { full_name: name } },
+      })
+      if (error) {
+        if (error.code === 'email_exists' || error.code === 'user_already_exists') return { ok: false, reason: 'email_exists' }
+        if (error.code === 'weak_password') return { ok: false, reason: 'weak_password' }
+        throw error
+      }
+      return { ok: true, link: data.properties.action_link }
     },
 
     async generateRecoveryLink(email, redirectTo) {

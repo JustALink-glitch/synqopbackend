@@ -10,6 +10,8 @@ import { logger } from 'hono/logger'
 import { requestId } from 'hono/request-id'
 import { secureHeaders } from 'hono/secure-headers'
 import { rateLimit, type RateLimitOptions } from './lib/rate-limit.js'
+import type { HumanCheck } from './lib/human-check.js'
+import { signUpRoutes } from './routes/sign-up.js'
 import type { LoadMembership, VerifyToken } from './lib/auth.js'
 import type { AuthAdmin } from './lib/auth-admin.js'
 import type { Sql } from './lib/db.js'
@@ -64,6 +66,8 @@ export interface AppDeps {
   log?: boolean
   /** Request limits (lib/rate-limit.ts). Off when unset; production turns them on in index.ts. */
   rateLimit?: RateLimitOptions
+  /** Bot check for sign-up and forgot password (Turnstile). Everyone passes when unset. */
+  humanCheck?: HumanCheck
 }
 
 export function createApp(deps: AppDeps) {
@@ -90,6 +94,7 @@ export function createApp(deps: AppDeps) {
   // Each router applies its own auth. Public: invitations, password reset. Signed in, no organisation yet:
   // organisations. Everything else requires an active membership.
   app.route('/v1/invitations', invitationRoutes(deps))
+  app.route('/v1/auth/sign-up', signUpRoutes(deps))
   app.route('/v1/auth/password-reset', passwordResetRoutes(deps))
   app.route('/v1/organisations', organisationRoutes(deps))
   app.route('/v1/me', meRoutes(deps))

@@ -1,5 +1,5 @@
 import type { AuthAdmin } from './auth-admin.js'
-import { refreshFlags } from './attention.js'
+import { refreshFlags, ruleSettings } from './attention.js'
 import type { Sql } from './db.js'
 import type { Mailer } from './mailer.js'
 import { deliver } from './notifications.js'
@@ -411,12 +411,14 @@ async function trainerDigests(deps: SchedulerDeps, org: Org, now: Date) {
     refreshed = true
   }
   const trainers = await deps.sql<{ id: string; role: string; can_grade: boolean }[]>`
-    select m.id, m.role::text, (m.role = 'trainer' or s.assistant_can_grade) as can_grade
+    select m.id, m.role::text, (m.role = 'trainer' or (s.assistant_can_grade and s.assistants_enabled)) as can_grade
     from public.organisation_members m join public.organisation_settings s on s.organisation_id = m.organisation_id
     where m.organisation_id = ${org.id} and m.role in ('trainer', 'assistant_trainer') and m.status = 'active'
       and exists (select 1 from public.cohort_course_trainers t where t.member_id = m.id)
   `
   const since = new Date(now.getTime() - 86_400_000)
+  // F1.06: when admins hide flags from trainers, the digest mustn't mention them either.
+  const { trainersSee } = await ruleSettings(deps.sql, org.id)
   let n = 0
   for (const t of trainers) {
     if (!(await claim(deps.sql, org.id, `trainer_digest:${t.id}:${today}`))) continue
@@ -432,7 +434,9 @@ async function trainerDigests(deps: SchedulerDeps, org: Org, now: Date) {
             order by a.due_at
           `
         : Promise.resolve([]),
-      deps.sql<{ first_name: string; last_name: string; cohort: string; rule: string; details: Record<string, unknown> | null }[]>`
+      !trainersSee
+        ? Promise.resolve([])
+        : deps.sql<{ first_name: string; last_name: string; cohort: string; rule: string; details: Record<string, unknown> | null }[]>`
         select m.first_name, m.last_name, h.name as cohort, f.rule::text, f.details
         from public.attention_flags f join public.enrolments e on e.id = f.enrolment_id
         join public.organisation_members m on m.id = e.member_id join public.cohorts h on h.id = e.cohort_id
