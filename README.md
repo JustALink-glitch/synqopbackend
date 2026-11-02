@@ -249,6 +249,15 @@ doesn't flood anyone. Everyone's Email / In-app choices are respected.
 Hosts that sleep between requests can set `SCHEDULER=off` and have a cron call
 `POST /v1/internal/run-jobs` with `Authorization: Bearer <CRON_SECRET>` every few minutes.
 
+## Hosting ($0 while there are no customers)
+
+`render.yaml` is a Render Blueprint for the API (free web service, Frankfurt) and the web app (free static site,
+with the security headers and the single-page rewrite). Render → New → Blueprint → this repo, then enter the
+secrets it asks for. Free web services sleep after 15 minutes, so a free cron (cron-job.org) calls
+`POST /v1/internal/run-jobs` every 5 minutes with `Authorization: Bearer <CRON_SECRET>`: reminders and digests
+run (`SCHEDULER=off`), the API stays awake, and the free Supabase project never pauses. When there's a paying
+customer, move the API to Starter and set `SCHEDULER=on`.
+
 ## Sign-up, bot check and two-step sign-in
 
 - **Sign-up (R1.01)** goes through `POST /v1/auth/sign-up`, not straight to Supabase. The API checks the bot

@@ -1,0 +1,101 @@
+# Render Blueprint: the Synqop API and web app on Render's free plans ($0).
+# Render → New → Blueprint → pick this repo. Render asks for the values marked `sync: false`.
+#
+# Free web services sleep after 15 minutes without traffic. A free cron (cron-job.org) calls
+# POST /v1/internal/run-jobs every 5 minutes with "Authorization: Bearer <CRON_SECRET>": that runs reminders
+# and digests (SCHEDULER=off) and keeps the API awake. One always-on free service fits Render's 750 free hours.
+services:
+  - type: web
+    name: synqop-api
+    runtime: node
+    repo: https://github.com/JustALink-glitch/synqopbackend
+    branch: synqop-v1
+    region: frankfurt
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    pullRequestPreviewsEnabled: false
+    domains:
+      - api.synqop.com
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: APP_URL
+        value: https://app.synqop.com
+      - key: CORS_ORIGINS
+        value: https://app.synqop.com,https://synqop-app.onrender.com
+      - key: SUPABASE_URL
+        value: https://hhaaoogckeaoyosfjeit.supabase.co
+      - key: EMAIL_FROM
+        value: Synqop <notifications@mail.synqop.com>
+      # Render sits in front of the API: use its X-Forwarded-For for the caller's IP (request limits).
+      - key: TRUST_PROXY
+        value: "1"
+      # Scheduled jobs run when cron-job.org calls /v1/internal/run-jobs, not inside the sleeping server.
+      - key: SCHEDULER
+        value: "off"
+      - key: CRON_SECRET
+        generateValue: true
+      # Secrets: typed into Render when the Blueprint is created. Never commit them.
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+
+  - type: web
+    name: synqop-app
+    runtime: static
+    repo: https://github.com/JustALink-glitch/synqopfrontend
+    branch: synqop-v1
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: false
+    domains:
+      - app.synqop.com
+    routes:
+      # Single-page app: every path that isn't a file loads the app.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.supabase.co; font-src 'self' data:; connect-src 'self' https://api.synqop.com https://*.supabase.co wss://*.supabase.co; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=63072000; includeSubDomains
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    envVars:
+      - key: VITE_API_URL
+        value: https://api.synqop.com
+      - key: VITE_SUPABASE_URL
+        value: https://hhaaoogckeaoyosfjeit.supabase.co
+      - key: VITE_SUPABASE_PUBLISHABLE_KEY
+        value: sb_publishable_h_WsZBb8hR1v3Owh4N6DdA_HMhrfLH6
+      # Optional: the Turnstile site key (public). Leave empty to run without the bot check.
+      - key: VITE_TURNSTILE_SITE_KEY
+        sync: false
