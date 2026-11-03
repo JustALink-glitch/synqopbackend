@@ -1,5 +1,8 @@
 import { Hono } from 'hono'
+import { z } from 'zod'
 import type { AppDeps } from '../app.js'
+import { AppError } from '../lib/errors.js'
+import { isoDate } from '../lib/validation.js'
 import { refreshFlags } from '../lib/attention.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
 
@@ -7,7 +10,62 @@ import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth
 export function overviewRoutes(deps: AppDeps) {
   const now = () => (deps.now ? deps.now() : new Date())
 
-  return new Hono<{ Variables: AuthVariables }>().use(requireAuth(deps), requireRole('owner', 'admin')).get('/', async (c) => {
+  const Activity = z
+    .object({ period: z.enum(['week', 'month', 'year', 'custom']).default('week'), from: isoDate.optional(), to: isoDate.optional() })
+    .refine((v) => v.period !== 'custom' || (v.from && v.to), { path: ['from'], message: 'Choose both dates.' })
+    .refine((v) => !v.from || !v.to || v.from <= v.to, { path: ['to'], message: 'Choose a date on or after the start.' })
+
+  return new Hono<{ Variables: AuthVariables }>()
+    .use(requireAuth(deps), requireRole('owner', 'admin'))
+    // O1.01 Training activity by period: weekly (8 weeks), monthly (12 months), yearly (5 years), or custom dates.
+    .get('/activity', async (c) => {
+      const parsed = Activity.safeParse(c.req.query())
+      if (!parsed.success) throw new AppError(400, 'bad_request', 'Some fields need attention.', parsed.error.issues.map((i) => ({ field: String(i.path[0] ?? 'period'), message: i.message })))
+      const { period, from, to } = parsed.data
+      const { organisationId } = c.var.auth
+      const [org] = await deps.sql<{ tz: string; today: string }[]>`
+        select time_zone as tz, (now() at time zone time_zone)::date::text as today from public.organisations where id = ${organisationId}
+      `
+      let unit: 'day' | 'week' | 'month' | 'year'
+      let start: string
+      let end: string = org!.today
+      if (period === 'custom') {
+        const days = (Date.parse(to!) - Date.parse(from!)) / 86_400_000
+        if (days > 3660) throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'from', message: 'Choose up to 10 years.' }])
+        unit = days <= 31 ? 'day' : days <= 183 ? 'week' : days <= 1830 ? 'month' : 'year'
+        start = from!
+        end = to!
+      } else {
+        unit = period
+        const back = { week: '7 weeks', month: '11 months', year: '4 years' }[period]
+        const [r] = await deps.sql<{ start: string }[]>`select (date_trunc(${unit}, ${org!.today}::date) - ${back}::interval)::date::text as start`
+        start = r!.start
+      }
+      const buckets = await deps.sql<{ start: string; present: number; excused: number; absent: number }[]>`
+        with b as (
+          select generate_series(date_trunc(${unit}, ${start}::date), date_trunc(${unit}, ${end}::date), ('1 ' || ${unit})::interval)::date as start
+        )
+        select b.start::text,
+               count(a.id) filter (where a.status = 'present')::int as present,
+               count(a.id) filter (where a.status = 'excused')::int as excused,
+               count(a.id) filter (where a.status = 'absent')::int as absent
+        from b
+        left join public.sessions s on s.organisation_id = ${organisationId} and s.cancelled_at is null
+          and date_trunc(${unit}, (s.starts_at at time zone ${org!.tz}))::date = b.start
+          and (s.starts_at at time zone ${org!.tz})::date between ${start}::date and ${end}::date
+        left join public.attendance_records a on a.session_id = s.id
+        group by b.start order by b.start
+      `
+      const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : null)
+      return c.json({
+        period,
+        unit,
+        from: start,
+        to: end,
+        buckets: buckets.map((b) => ({ start: b.start, present: b.present, excused: b.excused, absent: b.absent, rate: pct(b.present, b.present + b.excused + b.absent) })),
+      })
+    })
+    .get('/', async (c) => {
     const { organisationId } = c.var.auth
     await refreshFlags(deps.sql, organisationId, now())
     const [[counts], [att], weeks, next, [flags], [setup], [org]] = await Promise.all([

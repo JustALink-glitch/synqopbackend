@@ -6,6 +6,7 @@ import { audit } from '../lib/db.js'
 import { AppError, notFound } from '../lib/errors.js'
 import { buildReport, kindLabel, periodLabel, renderCsv, renderPdf, REPORT_KINDS, type ReportKind, type ReportParams } from '../lib/exports.js'
 import { isoDate, parseBody, uuid } from '../lib/validation.js'
+import { buildInsights } from '../lib/insights.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
 
 const COHORT_KINDS: ReportKind[] = ['cohort_summary', 'attendance', 'assignments']
@@ -149,8 +150,8 @@ export function exportRoutes(deps: AppDeps) {
         const { organisationId } = c.var.auth
         const params = { kind: body.kind, programmeId: body.programmeId, cohortId: body.cohortId, from: body.from, to: body.to }
         await scopeOf(organisationId, params)
-        const doc = await buildReport(deps.sql, organisationId, params)
-        return c.json({ preview: { ...doc, period: periodLabel(params.from, params.to) } })
+        const [doc, insights] = await Promise.all([buildReport(deps.sql, organisationId, params), buildInsights(deps.sql, organisationId, params)])
+        return c.json({ preview: { ...doc, ...insights, period: periodLabel(params.from, params.to) } })
       })
 
       // E1.02 Generate report.
@@ -173,6 +174,21 @@ export function exportRoutes(deps: AppDeps) {
         await deps.sql`delete from public.generated_reports where id = ${id} and status = 'failed'`
         const next = await start(organisationId, memberId, old.parameters, old.format, c.var.requestId)
         return c.json({ report: { id: next } }, 202)
+      })
+
+      // E1.07 Delete a generated file (the data it came from stays).
+      .delete('/:id', async (c) => {
+        const { organisationId, memberId } = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Report not found.')
+        const [row] = await deps.sql`delete from public.generated_reports where id = ${id} and organisation_id = ${organisationId} and status not in ('queued', 'running') returning id`
+        if (!row) {
+          const [busy] = await deps.sql`select 1 from public.generated_reports where id = ${id} and organisation_id = ${organisationId}`
+          if (busy) throw new AppError(409, 'generating', 'This report is still being generated. Delete it when it’s done.')
+          throw notFound('Report not found.')
+        }
+        await audit(deps.sql, { organisationId, actorMemberId: memberId, action: 'report.deleted', entityType: 'report', entityId: id, requestId: c.var.requestId })
+        return c.body(null, 204)
       })
 
       // E1.04 Download.

@@ -41,6 +41,7 @@ interface Row {
   author_first: string | null
   author_last: string | null
   author_role: Role | null
+  read: boolean
 }
 
 const STAFF: Role[] = ['owner', 'admin', 'trainer', 'assistant_trainer']
@@ -71,7 +72,8 @@ export function announcementRoutes(deps: AppDeps) {
           ).map((r) => r.id)
     return deps.sql<Row[]>`
       select a.id, a.audience, a.cohort_id, h.name as cohort_name, a.title, a.body, a.important, a.created_at, a.updated_at,
-             m.id as author_id, m.first_name as author_first, m.last_name as author_last, m.role as author_role
+             m.id as author_id, m.first_name as author_first, m.last_name as author_last, m.role as author_role,
+             (a.author_member_id = ${auth.memberId} or exists (select 1 from public.announcement_reads r where r.announcement_id = a.id and r.member_id = ${auth.memberId})) as read
       from public.announcements a
       left join public.cohorts h on h.id = a.cohort_id
       left join public.organisation_members m on m.id = a.author_member_id
@@ -98,8 +100,22 @@ export function announcementRoutes(deps: AppDeps) {
     author: r.author_id ? { id: r.author_id, name: `${r.author_first} ${r.author_last ?? ''}`.trim(), role: r.author_role } : null,
     createdAt: r.created_at,
     edited: r.updated_at.getTime() - r.created_at.getTime() > 60_000,
+    read: r.read,
     can: { edit: r.author_id === auth.memberId || isAdmin(auth) },
   })
+
+  async function markRead(auth: AuthContext, ids: string[]) {
+    if (!ids.length) return
+    await deps.sql`
+      insert into public.announcement_reads (announcement_id, member_id)
+      select id, ${auth.memberId} from unnest(${ids}::uuid[]) as id on conflict do nothing
+    `
+    const links = ids.map((id) => '%#' + id)
+    await deps.sql`
+      update public.notifications set read_at = coalesce(read_at, now())
+      where recipient_member_id = ${auth.memberId} and event = 'announcement' and link_path like any(${links}::text[])
+    `
+  }
 
   /** Where each role reads announcements; the bell links there. */
   const page = (role: Role) =>
@@ -124,11 +140,41 @@ export function announcementRoutes(deps: AppDeps) {
             `
           : []
       return c.json({
+        unread: rows.filter((r) => !r.read).length,
         announcements: rows.map((r) => toJson(r, auth)),
         canPost: admin || (staff && cohorts.length > 0),
         audiences: admin ? ['everyone', 'staff', 'participants', 'cohort'] : staff && cohorts.length ? ['cohort'] : [],
         cohorts,
       })
+    })
+
+    // The menu badge: how many this person hasn't marked read.
+    .get('/unread', async (c) => c.json({ unread: (await visible(c.var.auth)).filter((r) => !r.read).length }))
+
+    // "Mark as read": takes it out of the count and clears its notification from the bell.
+    .post('/read-all', async (c) => {
+      const auth = c.var.auth
+      const ids = (await visible(auth)).filter((r) => !r.read).map((r) => r.id)
+      await markRead(auth, ids)
+      return c.json({ unread: 0 })
+    })
+
+    .post('/:id/read', async (c) => {
+      const auth = c.var.auth
+      const id = c.req.param('id')
+      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+      const [row] = await visible(auth, id)
+      if (!row) throw notFound('Announcement not found.')
+      await markRead(auth, [id])
+      return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
+    })
+
+    .delete('/:id/read', async (c) => {
+      const auth = c.var.auth
+      const id = c.req.param('id')
+      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+      await deps.sql`delete from public.announcement_reads where announcement_id = ${id} and member_id = ${auth.memberId}`
+      return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
     })
 
     .post('/', async (c) => {

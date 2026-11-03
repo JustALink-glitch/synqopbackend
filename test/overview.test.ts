@@ -64,4 +64,29 @@ describe.skipIf(!TEST_DATABASE_URL)('programme overview (O1.01)', () => {
     expect(weeks.reduce((n, w) => n + w.present + w.excused, 0)).toBe(2)
     expect(Object.keys(res.body.nextSessions as object)).toEqual([cohortId])
   })
+
+  it('shows training activity weekly, monthly, yearly or for chosen dates', async () => {
+    type Activity = { unit: string; buckets: { start: string; present: number; excused: number; rate: number | null }[] }
+    const total = (a: Activity) => a.buckets.reduce((n, b) => n + b.present + b.excused, 0)
+    const week = (await get('/v1/overview/activity?period=week')).body as Activity
+    expect(week).toMatchObject({ unit: 'week' })
+    expect(week.buckets).toHaveLength(8)
+    expect(total(week)).toBe(2)
+    const month = (await get('/v1/overview/activity?period=month')).body as Activity
+    expect(month.buckets).toHaveLength(12)
+    expect(month.buckets.every((b) => b.start.endsWith('-01'))).toBe(true)
+    expect(total(month)).toBe(2)
+    const year = (await get('/v1/overview/activity?period=year')).body as Activity
+    expect(year.buckets).toHaveLength(5)
+    expect(total(year)).toBe(2)
+    const days = (await get(`/v1/overview/activity?period=custom&from=${day(-6)}&to=${day(0)}`)).body as Activity
+    expect(days.unit).toBe('day')
+    expect(days.buckets).toHaveLength(7)
+    expect(total(days)).toBe(2)
+    expect(days.buckets.find((b) => b.present)!.rate).toBe(50)
+    const none = (await get(`/v1/overview/activity?period=custom&from=${day(-90)}&to=${day(-30)}`)).body as Activity
+    expect(none.unit).toBe('week')
+    expect(total(none)).toBe(0)
+    expect((await get('/v1/overview/activity?period=custom&from=2026-01-01')).status).toBe(400)
+  })
 })

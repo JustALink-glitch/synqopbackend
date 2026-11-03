@@ -117,6 +117,25 @@ describe.skipIf(!TEST_DATABASE_URL)('announcements (G1.03)', () => {
     expect(await titles(tk.ada)).toHaveLength(4)
   })
 
+  it('counts new announcements until each person marks them read', async () => {
+    expect((await req('GET', '/v1/announcements/unread', { token: tk.chidi })).body).toEqual({ unread: 3 })
+    // Your own posts are never "new" to you.
+    expect((await req('GET', '/v1/announcements/unread', { token: tk.ngozi })).body).toEqual({ unread: 2 })
+    const list = (await req('GET', '/v1/announcements', { token: tk.chidi })).body as { unread: number; announcements: (Item & { read: boolean })[] }
+    expect(list.unread).toBe(3)
+    const first = list.announcements[0]!
+    expect((await req('POST', `/v1/announcements/${first.id}/read`, { token: tk.chidi })).body).toEqual({ unread: 2 })
+    // Marking it read also clears it from the bell.
+    const [n] = await sql<{ read_at: Date | null }[]>`
+      select n.read_at from notifications n join organisation_members m on m.id = n.recipient_member_id where m.email = 'chidi@example.com' and n.link_path like ${'%#' + first.id}`
+    expect(n!.read_at).not.toBeNull()
+    // Bisi's count is her own.
+    expect((await req('GET', '/v1/announcements/unread', { token: tk.bisi })).body).toEqual({ unread: 2 })
+    expect((await req('DELETE', `/v1/announcements/${first.id}/read`, { token: tk.chidi })).body).toEqual({ unread: 3 })
+    expect((await req('POST', '/v1/announcements/read-all', { token: tk.chidi })).body).toEqual({ unread: 0 })
+    expect(((await req('GET', '/v1/announcements', { token: tk.chidi })).body.announcements as { read: boolean }[]).every((x) => x.read)).toBe(true)
+  })
+
   it('lets the author or an admin edit and delete, and deleting clears the bell', async () => {
     const mine = ((await req('GET', '/v1/announcements', { token: tk.chidi })).body.announcements as Item[]).find((a) => a.title === 'Bring laptops')!
     expect(mine.can.edit).toBe(false)
