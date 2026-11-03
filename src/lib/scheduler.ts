@@ -516,6 +516,8 @@ async function purgeDeletedOrganisations(deps: SchedulerDeps, now: Date) {
       }
       const photos = await deps.sql<{ path: string }[]>`select photo_path as path from public.organisation_members where organisation_id = ${org.id} and photo_path is not null`
       paths.push(...photos.map((r) => r.path))
+      const logo = await deps.sql<{ path: string }[]>`select logo_path as path from public.organisations where id = ${org.id} and logo_path is not null`
+      paths.push(...logo.map((r) => r.path))
       const users = await deps.sql<{ user_id: string }[]>`select user_id from public.organisation_members where organisation_id = ${org.id} and user_id is not null`
       await deps.sql.begin(async (tx) => {
         await tx`select set_config('synqop.purging', 'on', true)`

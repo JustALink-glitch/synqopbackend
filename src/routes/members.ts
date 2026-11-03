@@ -569,6 +569,65 @@ export function memberRoutes(deps: AppDeps) {
         return c.body(null, 204)
       })
 
+      // Ownership transfer (pilot feedback, Nov 2026). The owner hands the organisation to an active admin and
+      // becomes an admin. Both are emailed, so a transfer nobody expected is noticed.
+      .post('/:id/transfer-ownership', async (c) => {
+        const auth = c.var.auth
+        if (auth.role !== 'owner') throw new AppError(403, 'owner_only', 'Only the owner can transfer ownership.')
+        const id = uuid.safeParse(c.req.param('id'))
+        if (!id.success) throw notFound('Member not found.')
+        const result = await deps.sql.begin(async (tx) => {
+          const [target] = await tx<{ id: string; role: string; status: string; email: string; first_name: string; last_name: string }[]>`
+          select id, role, status, email, first_name, last_name from public.organisation_members
+          where id = ${id.data} and organisation_id = ${auth.organisationId} for update
+        `
+          if (!target) throw notFound('Member not found.')
+          if (target.id === auth.memberId) throw new AppError(409, 'self', 'You’re already the owner.')
+          if (target.role !== 'admin' || target.status !== 'active')
+            throw new AppError(
+              409,
+              'not_admin',
+              'Ownership can only go to an active admin. Make them an admin first, and wait for them to accept their invitation.',
+            )
+          await tx`update public.organisation_members set role = 'admin', updated_at = now() where id = ${auth.memberId}`
+          await tx`update public.organisation_members set role = 'owner', updated_at = now() where id = ${target.id}`
+          const [org] = await tx<{ name: string }[]>`select name from public.organisations where id = ${auth.organisationId}`
+          const [me] = await tx<
+            { email: string; first_name: string; last_name: string }[]
+          >`select email, first_name, last_name from public.organisation_members where id = ${auth.memberId}`
+          await audit(tx, {
+            organisationId: auth.organisationId,
+            actorMemberId: auth.memberId,
+            action: 'organisation.ownership_transferred',
+            entityType: 'member',
+            entityId: target.id,
+            data: { from: auth.memberId, to: target.id },
+            requestId: c.var.requestId,
+          })
+          return { target, org: org!.name, me: me! }
+        })
+        const signIn = `${deps.appUrl.replace(/\/$/, '')}/sign-in`
+        const toNew = renderEmail({
+          title: `You’re now the owner of ${result.org}`,
+          intro: `Hi ${result.target.first_name}, ${result.me.first_name} ${result.me.last_name} made you the owner of ${result.org} on Synqop. You can now manage billing, data and every member, and transfer ownership again.`,
+          buttonLabel: 'Open Synqop',
+          buttonUrl: signIn,
+          note: 'If you didn’t expect this, contact them straight away.',
+        })
+        const toOld = renderEmail({
+          title: 'You transferred ownership',
+          intro: `Hi ${result.me.first_name}, you made ${result.target.first_name} ${result.target.last_name} the owner of ${result.org} on Synqop. You’re now an admin.`,
+          buttonLabel: 'Open Synqop',
+          buttonUrl: signIn,
+          note: 'If this wasn’t you, contact the new owner straight away and change your password.',
+        })
+        await Promise.all([
+          deps.mailer.send({ to: result.target.email, subject: `You’re now the owner of ${result.org}`, text: toNew.text, html: toNew.html }),
+          deps.mailer.send({ to: result.me.email, subject: `You transferred ownership of ${result.org}`, text: toOld.text, html: toOld.html }),
+        ]).catch((e) => console.error('Ownership transfer email failed', e))
+        return c.json({ owner: { id: result.target.id, name: `${result.target.first_name} ${result.target.last_name}` } })
+      })
+
       // B2.05 Edit details. A changed sign-in email is changed in Supabase Auth too, and the new address is told.
       .patch('/:id', async (c) => {
         const body = await parseBody(c, EditDetails)

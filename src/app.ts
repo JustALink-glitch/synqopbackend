@@ -22,6 +22,7 @@ import { cohortRoutes } from './routes/cohorts.js'
 import { courseRoutes } from './routes/courses.js'
 import { invitationRoutes } from './routes/invitations.js'
 import { cohortCourseResourceRoutes } from './routes/cohort-course-resources.js'
+import { permanentDeleteRoutes } from './routes/permanent-delete.js'
 import { photoRoutes } from './routes/photos.js'
 import { meRoutes } from './routes/me.js'
 import { memberRoutes } from './routes/members.js'
@@ -108,6 +109,7 @@ export function createApp(deps: AppDeps) {
   app.route('/v1/participants', participantRoutes(deps))
   app.route('/v1/sessions', sessionRoutes(deps))
   app.route('/v1/cohort-courses', cohortCourseResourceRoutes(deps))
+  app.route('/v1', permanentDeleteRoutes(deps))
   app.route('/v1/assignments', assignmentRoutes(deps))
   app.route('/v1/my', myRoutes(deps))
   app.route('/v1/session-feedback', feedbackRoutes(deps))

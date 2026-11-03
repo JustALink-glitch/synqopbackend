@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import type { AppDeps } from '../app.js'
 import { refreshFlags, ruleSettings } from '../lib/attention.js'
 import { completionRule } from '../lib/completion.js'
 import { audit, type Tx } from '../lib/db.js'
+import { AppError } from '../lib/errors.js'
 import { parseBody, timeZone, uuid } from '../lib/validation.js'
 import { shortName } from '../lib/names.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
@@ -39,7 +41,11 @@ const Rules = z.object({
 })
 
 const ReportSettings = z.object({
-  dueHours: z.coerce.number({ error: 'Enter a number of hours.' }).int('Use whole hours.').min(1, 'Use 1 hour or more.').max(168, 'Use a week (168 hours) or less.'),
+  dueHours: z.coerce
+    .number({ error: 'Enter a number of hours.' })
+    .int('Use whole hours.')
+    .min(1, 'Use 1 hour or more.')
+    .max(168, 'Use a week (168 hours) or less.'),
   remind: z.boolean(),
   overdueOnOverview: z.boolean(),
   questions: z
@@ -66,11 +72,24 @@ const optionalText = (max: number) =>
     .nullish()
     .transform((v) => v || null)
 
+const LOGO_TYPES: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
+const MAX_LOGO_BYTES = 2 * 1024 * 1024
+const LogoUpload = z.object({ type: z.string().max(100), size: z.number().int().min(1).max(MAX_LOGO_BYTES, 'Logos can be up to 2 MB.') })
+const LogoPath = z.object({ path: z.string().min(1).max(500) })
+
 const Organisation = z.object({
   name: z.string().trim().min(1, 'Enter your organisation’s name.').max(120, 'Use 120 characters or fewer.'),
   type: optionalText(60),
   country: z
-    .preprocess((v) => (v === '' ? null : v), z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, 'Choose a country.').nullish())
+    .preprocess(
+      (v) => (v === '' ? null : v),
+      z
+        .string()
+        .trim()
+        .toUpperCase()
+        .regex(/^[A-Z]{2}$/, 'Choose a country.')
+        .nullish(),
+    )
     .transform((v) => v ?? null),
   timeZone,
 })
@@ -93,9 +112,18 @@ const ProgrammeSetup = z.object({
 const Attendance = z.object({
   joinLinks: z.enum(['personal', 'shared']),
   presentMinPct: pct.refine((v) => v >= 1, 'Use 1 to 100.'),
-  late: z.object({ enabled: z.boolean(), minutes: z.coerce.number({ error: 'Enter minutes.' }).int('Use whole minutes.').min(1, 'Use 1 minute or more.').max(240, 'Use 240 minutes or fewer.') }),
-  recordings: z.object({ shared: z.boolean(), days: z.coerce.number({ error: 'Enter days.' }).int('Use whole days.').min(1, 'Use 1 day or more.').max(365, 'Use 365 days or fewer.') }),
-  inPersonReminder: z.object({ enabled: z.boolean(), hours: z.coerce.number({ error: 'Enter hours.' }).int('Use whole hours.').min(1, 'Use 1 hour or more.').max(72, 'Use 72 hours or fewer.') }),
+  late: z.object({
+    enabled: z.boolean(),
+    minutes: z.coerce.number({ error: 'Enter minutes.' }).int('Use whole minutes.').min(1, 'Use 1 minute or more.').max(240, 'Use 240 minutes or fewer.'),
+  }),
+  recordings: z.object({
+    shared: z.boolean(),
+    days: z.coerce.number({ error: 'Enter days.' }).int('Use whole days.').min(1, 'Use 1 day or more.').max(365, 'Use 365 days or fewer.'),
+  }),
+  inPersonReminder: z.object({
+    enabled: z.boolean(),
+    hours: z.coerce.number({ error: 'Enter hours.' }).int('Use whole hours.').min(1, 'Use 1 hour or more.').max(72, 'Use 72 hours or fewer.'),
+  }),
 })
 
 /** /v1/settings — F1.01 Organisation details, F1.04 Programme setup, F1.07 Attendance & Zoom, F1.05 Completion & certificates, F1.06 Needs attention rules, F1.08 Session reports (owners and admins). */
@@ -125,7 +153,9 @@ export function settingsRoutes(deps: AppDeps) {
       certificateTitle: s!.title,
       defaultOutcomes: s!.options,
       organisation: s!.org_name,
-      sample: sample ? { name: `${sample.first_name} ${sample.last_name}`.trim(), programme: sample.programme, cohort: sample.cohort, endsOn: sample.ends_on } : null,
+      sample: sample
+        ? { name: `${sample.first_name} ${sample.last_name}`.trim(), programme: sample.programme, cohort: sample.cohort, endsOn: sample.ends_on }
+        : null,
     }
   }
 
@@ -164,7 +194,14 @@ export function settingsRoutes(deps: AppDeps) {
         where organisation_id = ${organisationId} and role = 'owner' and status <> 'deactivated' order by created_at limit 1
       `,
     ])
-    return { name: o!.name, type: o!.type, country: o!.country, timeZone: o!.time_zone, owner: owner ? shortName(owner.first_name, owner.last_name) : null, createdAt: o!.created_at }
+    return {
+      name: o!.name,
+      type: o!.type,
+      country: o!.country,
+      timeZone: o!.time_zone,
+      owner: owner ? shortName(owner.first_name, owner.last_name) : null,
+      createdAt: o!.created_at,
+    }
   }
 
   async function programmeSetup(organisationId: string) {
@@ -203,7 +240,16 @@ export function settingsRoutes(deps: AppDeps) {
   async function attendanceSettings(organisationId: string) {
     const [[s], [zoom]] = await Promise.all([
       deps.sql<
-        { links: 'personal' | 'shared'; present: number; late_on: boolean; late: number; rec_on: boolean; rec_days: number; remind_on: boolean; remind: number }[]
+        {
+          links: 'personal' | 'shared'
+          present: number
+          late_on: boolean
+          late: number
+          rec_on: boolean
+          rec_days: number
+          remind_on: boolean
+          remind: number
+        }[]
       >`
         select join_link_mode as links, zoom_present_min_pct::int as present, zoom_late_enabled as late_on, zoom_late_after_minutes as late,
                recordings_shared as rec_on, recording_retention_days as rec_days, in_person_reminder_enabled as remind_on, in_person_reminder_hours as remind
@@ -234,7 +280,14 @@ export function settingsRoutes(deps: AppDeps) {
   }
 
   const changed = (tx: Tx, auth: { organisationId: string; memberId: string }, action: string, requestId: string | undefined) =>
-    audit(tx, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action, entityType: 'organisation', entityId: auth.organisationId, requestId })
+    audit(tx, {
+      organisationId: auth.organisationId,
+      actorMemberId: auth.memberId,
+      action,
+      entityType: 'organisation',
+      entityId: auth.organisationId,
+      requestId,
+    })
 
   return (
     new Hono<{ Variables: AuthVariables }>()
@@ -253,6 +306,41 @@ export function settingsRoutes(deps: AppDeps) {
           await changed(tx, auth, 'settings.organisation_updated', c.var.requestId)
         })
         return c.json({ settings: await organisationView(auth.organisationId) })
+      })
+
+      // Organisation logo (pilot feedback, Nov 2026): PNG, JPG or WebP up to 2 MB, uploaded straight to storage.
+      .post('/organisation/logo/upload', async (c) => {
+        const body = await parseBody(c, LogoUpload)
+        const ext = LOGO_TYPES[body.type]
+        if (!ext) throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'logo', message: 'Use a PNG, JPG or WebP image.' }])
+        return c.json({ upload: await deps.storage.createUpload(`${c.var.auth.organisationId}/logo/${randomUUID()}.${ext}`) })
+      })
+      .put('/organisation/logo', async (c) => {
+        const body = await parseBody(c, LogoPath)
+        const auth = c.var.auth
+        const bad = (message: string) => new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'logo', message }])
+        if (!body.path.startsWith(`${auth.organisationId}/logo/`) || body.path.includes('..')) throw bad('Choose the image again.')
+        const stat = await deps.storage.stat(body.path)
+        if (!stat) throw bad('The image didn’t finish uploading. Choose it again.')
+        if (stat.size > MAX_LOGO_BYTES) throw bad('Logos can be up to 2 MB.')
+        if (stat.type && !LOGO_TYPES[stat.type]) throw bad('Use a PNG, JPG or WebP image.')
+        const [old] = await deps.sql<{ logo_path: string | null }[]>`select logo_path from public.organisations where id = ${auth.organisationId}`
+        await deps.sql.begin(async (tx) => {
+          await tx`update public.organisations set logo_path = ${body.path} where id = ${auth.organisationId}`
+          await changed(tx, auth, 'settings.logo_updated', c.var.requestId)
+        })
+        if (old?.logo_path && old.logo_path !== body.path) await deps.storage.remove([old.logo_path]).catch(() => undefined)
+        return c.json({ logoUrl: await deps.storage.viewUrl(body.path, 3600) })
+      })
+      .delete('/organisation/logo', async (c) => {
+        const auth = c.var.auth
+        const [old] = await deps.sql<{ logo_path: string | null }[]>`select logo_path from public.organisations where id = ${auth.organisationId}`
+        await deps.sql.begin(async (tx) => {
+          await tx`update public.organisations set logo_path = null where id = ${auth.organisationId}`
+          await changed(tx, auth, 'settings.logo_removed', c.var.requestId)
+        })
+        if (old?.logo_path) await deps.storage.remove([old.logo_path]).catch(() => undefined)
+        return c.body(null, 204)
       })
 
       .get('/programme-setup', async (c) => c.json({ settings: await programmeSetup(c.var.auth.organisationId) }))
@@ -325,7 +413,14 @@ export function settingsRoutes(deps: AppDeps) {
               `
             }
           }
-          await audit(tx, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action: 'settings.session_reports_updated', entityType: 'organisation', entityId: auth.organisationId, requestId: c.var.requestId })
+          await audit(tx, {
+            organisationId: auth.organisationId,
+            actorMemberId: auth.memberId,
+            action: 'settings.session_reports_updated',
+            entityType: 'organisation',
+            entityId: auth.organisationId,
+            requestId: c.var.requestId,
+          })
         })
         return c.json({ settings: await reportSettings(auth.organisationId) })
       })
@@ -349,7 +444,14 @@ export function settingsRoutes(deps: AppDeps) {
               certificate_title = ${body.certificateTitle}, default_outcome_options = ${body.defaultOutcomes}, updated_at = now()
             where organisation_id = ${auth.organisationId}
           `
-          await audit(tx, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action: 'settings.completion_updated', entityType: 'organisation', entityId: auth.organisationId, requestId: c.var.requestId })
+          await audit(tx, {
+            organisationId: auth.organisationId,
+            actorMemberId: auth.memberId,
+            action: 'settings.completion_updated',
+            entityType: 'organisation',
+            entityId: auth.organisationId,
+            requestId: c.var.requestId,
+          })
         })
         return c.json({ settings: await completionSettings(auth.organisationId) })
       })
@@ -371,7 +473,14 @@ export function settingsRoutes(deps: AppDeps) {
               flag_trainers_can_resolve = ${body.trainersCanResolve}, updated_at = now()
             where organisation_id = ${auth.organisationId}
           `
-          await audit(tx, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action: 'settings.attention_rules_updated', entityType: 'organisation', entityId: auth.organisationId, requestId: c.var.requestId })
+          await audit(tx, {
+            organisationId: auth.organisationId,
+            actorMemberId: auth.memberId,
+            action: 'settings.attention_rules_updated',
+            entityType: 'organisation',
+            entityId: auth.organisationId,
+            requestId: c.var.requestId,
+          })
         })
         return c.json({ settings: await rulesView(auth.organisationId) })
       })
