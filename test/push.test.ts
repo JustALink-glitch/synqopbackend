@@ -32,7 +32,9 @@ describe.skipIf(!TEST_DATABASE_URL)('web push (G1.01)', () => {
     await sql`insert into auth.users (id, email) values (${owner.id}, ${owner.email})`
     token = as(owner.id, owner.email)
     await req('POST', '/v1/organisations', { token, body: { organisationName: 'ALIWA Foundation', fullName: 'Ada Obi' } })
-    trainerId = ((await req('POST', '/v1/members', { token, body: { email: 'ngozi@aliwa.org', fullName: 'Ngozi Eze', role: 'trainer' } })).body.member as { id: string }).id
+    trainerId = (
+      (await req('POST', '/v1/members', { token, body: { email: 'ngozi@aliwa.org', fullName: 'Ngozi Eze', role: 'trainer' } })).body.member as { id: string }
+    ).id
     await req('POST', `/v1/invitations/${t.mail.lastToken('ngozi@aliwa.org')}/accept`, { body: { password: 'a-strong-password' } })
     const [row] = await sql<{ user_id: string }[]>`select user_id from organisation_members where id = ${trainerId}`
     trainerToken = as(row!.user_id, 'ngozi@aliwa.org')
@@ -44,13 +46,25 @@ describe.skipIf(!TEST_DATABASE_URL)('web push (G1.01)', () => {
 
   it('gives browsers the public key and saves each device', async () => {
     expect((await req('GET', '/v1/notifications/push/key', { token })).body).toEqual({ publicKey: 'BTestPublicKey' })
-    expect((await req('PUT', '/v1/notifications/push/subscription', { token, body: { endpoint: 'http://insecure.example/1', keys: sub(1).keys } })).status).toBe(400)
+    expect(
+      (await req('PUT', '/v1/notifications/push/subscription', { token, body: { endpoint: 'http://insecure.example/1', keys: sub(1).keys } })).status,
+    ).toBe(400)
     expect((await req('PUT', '/v1/notifications/push/subscription', { token, body: sub(1) })).status).toBe(200)
     expect((await req('PUT', '/v1/notifications/push/subscription', { token: trainerToken, body: sub(2) })).status).toBe(200)
     expect((await req('PUT', '/v1/notifications/push/subscription', { token: trainerToken, body: sub(3) })).status).toBe(200)
     // The same device again only updates it.
     expect((await req('PUT', '/v1/notifications/push/subscription', { token: trainerToken, body: sub(3) })).status).toBe(200)
     expect(await sql`select 1 from push_subscriptions`).toHaveLength(3)
+  })
+
+  it('sends a test push to this device only', async () => {
+    sent.length = 0
+    expect((await req('POST', '/v1/notifications/push/test', { token, body: { endpoint: sub(2).endpoint } })).status).toBe(404)
+    const res = await req('POST', '/v1/notifications/push/test', { token: trainerToken, body: { endpoint: sub(2).endpoint } })
+    expect(res.body).toEqual({ result: 'sent' })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ endpoint: sub(2).endpoint, payload: { title: 'Synqop notifications are on' } })
+    sent.length = 0
   })
 
   it('pushes new bell notifications once, to the right person, and forgets dead devices', async () => {

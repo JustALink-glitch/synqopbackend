@@ -25,9 +25,10 @@ export function createWebPushSender(options: { publicKey: string; privateKey: st
         await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload, { TTL: 86_400, urgency: 'normal' })
         return 'sent'
       } catch (error) {
-        const status = (error as { statusCode?: number }).statusCode
+        const { statusCode: status, body } = error as { statusCode?: number; body?: string }
         if (status === 404 || status === 410) return 'gone'
-        console.error('Push failed', status ?? error)
+        // Apple and Google put the reason in the body (e.g. BadJwtToken); never the keys.
+        console.error('Push failed', new URL(s.endpoint).host, status ?? error, body?.slice(0, 200) ?? '')
         return 'failed'
       }
     },

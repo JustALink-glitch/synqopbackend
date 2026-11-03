@@ -24,61 +24,91 @@ const Unsubscribe = z.object({ endpoint: z.string().max(2000) })
 /** /v1/notifications — G1.01 the bell: your own in-app notifications, newest first. */
 export function notificationRoutes(deps: AppDeps) {
   const now = () => (deps.now ? deps.now() : new Date())
-  return new Hono<{ Variables: AuthVariables }>()
-    .use(requireAuth(deps))
+  return (
+    new Hono<{ Variables: AuthVariables }>()
+      .use(requireAuth(deps))
 
-    .get('/', async (c) => {
-      const { memberId } = c.var.auth
-      const limit = Math.min(Math.max(Number(c.req.query('limit')) || 20, 1), 100)
-      const [rows, [count]] = await Promise.all([
-        deps.sql<Row[]>`
+      .get('/', async (c) => {
+        const { memberId } = c.var.auth
+        const limit = Math.min(Math.max(Number(c.req.query('limit')) || 20, 1), 100)
+        const [rows, [count]] = await Promise.all([
+          deps.sql<Row[]>`
           select id, event, title, body, link_path, read_at, created_at from public.notifications
           where recipient_member_id = ${memberId} order by created_at desc, id desc limit ${limit}
         `,
-        deps.sql<{ n: number }[]>`select count(*)::int as n from public.notifications where recipient_member_id = ${memberId} and read_at is null`,
-      ])
-      return c.json({
-        unread: count!.n,
-        notifications: rows.map((r) => ({ id: r.id, event: r.event, title: r.title, body: r.body, link: r.link_path, readAt: r.read_at, createdAt: r.created_at })),
+          deps.sql<{ n: number }[]>`select count(*)::int as n from public.notifications where recipient_member_id = ${memberId} and read_at is null`,
+        ])
+        return c.json({
+          unread: count!.n,
+          notifications: rows.map((r) => ({
+            id: r.id,
+            event: r.event,
+            title: r.title,
+            body: r.body,
+            link: r.link_path,
+            readAt: r.read_at,
+            createdAt: r.created_at,
+          })),
+        })
       })
-    })
 
-    // Web push: the key browsers need, and this device's subscription. Push follows the in-app choices.
-    .get('/push/key', (c) => c.json({ publicKey: deps.push?.publicKey ?? null }))
+      // Web push: the key browsers need, and this device's subscription. Push follows the in-app choices.
+      .get('/push/key', (c) => c.json({ publicKey: deps.push?.publicKey ?? null }))
 
-    .put('/push/subscription', async (c) => {
-      if (!deps.push) return c.json({ error: { code: 'push_unavailable', message: 'Push notifications aren’t set up yet.' } }, 409)
-      const body = await parseBody(c, Subscription)
-      const { memberId, organisationId } = c.var.auth
-      // One device, one person: signing in as someone else on the same browser moves it to them.
-      await deps.sql`
+      .put('/push/subscription', async (c) => {
+        if (!deps.push) return c.json({ error: { code: 'push_unavailable', message: 'Push notifications aren’t set up yet.' } }, 409)
+        const body = await parseBody(c, Subscription)
+        const { memberId, organisationId } = c.var.auth
+        // One device, one person: signing in as someone else on the same browser moves it to them.
+        await deps.sql`
         insert into public.push_subscriptions (organisation_id, member_id, endpoint, p256dh, auth, user_agent)
         values (${organisationId}, ${memberId}, ${body.endpoint}, ${body.keys.p256dh}, ${body.keys.auth}, ${c.req.header('User-Agent')?.slice(0, 300) ?? null})
         on conflict (endpoint) do update set organisation_id = excluded.organisation_id, member_id = excluded.member_id,
           p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent
       `
-      return c.json({ ok: true })
-    })
+        return c.json({ ok: true })
+      })
 
-    .delete('/push/subscription', async (c) => {
-      const body = await parseBody(c, Unsubscribe)
-      await deps.sql`delete from public.push_subscriptions where endpoint = ${body.endpoint} and member_id = ${c.var.auth.memberId}`
-      return c.body(null, 204)
-    })
+      // A test push to this device, so people can see it works without waiting for real news.
+      .post('/push/test', async (c) => {
+        if (!deps.push) return c.json({ error: { code: 'push_unavailable', message: 'Push notifications aren’t set up yet.' } }, 409)
+        const body = await parseBody(c, Unsubscribe)
+        const [s] = await deps.sql<{ id: string; endpoint: string; p256dh: string; auth: string }[]>`
+        select id, endpoint, p256dh, auth from public.push_subscriptions where endpoint = ${body.endpoint} and member_id = ${c.var.auth.memberId}
+      `
+        if (!s) return c.json({ error: { code: 'not_found', message: 'This device isn’t set up for push. Turn push on again.' } }, 404)
+        const payload = JSON.stringify({
+          id: `test-${Date.now()}`,
+          title: 'Synqop notifications are on',
+          body: 'This is how new notifications will show on this device.',
+          link: '/',
+        })
+        const result = await deps.push.send(s, payload)
+        if (result === 'gone') await deps.sql`delete from public.push_subscriptions where id = ${s.id}`
+        if (result === 'sent') await deps.sql`update public.push_subscriptions set last_used_at = ${now()} where id = ${s.id}`
+        return c.json({ result })
+      })
 
-    .post('/read-all', async (c) => {
-      await deps.sql`update public.notifications set read_at = ${now()} where recipient_member_id = ${c.var.auth.memberId} and read_at is null`
-      return c.json({ unread: 0 })
-    })
+      .delete('/push/subscription', async (c) => {
+        const body = await parseBody(c, Unsubscribe)
+        await deps.sql`delete from public.push_subscriptions where endpoint = ${body.endpoint} and member_id = ${c.var.auth.memberId}`
+        return c.body(null, 204)
+      })
 
-    .post('/:id/read', async (c) => {
-      const id = c.req.param('id')
-      if (!uuid.safeParse(id).success) throw notFound('Notification not found.')
-      const [row] = await deps.sql`
+      .post('/read-all', async (c) => {
+        await deps.sql`update public.notifications set read_at = ${now()} where recipient_member_id = ${c.var.auth.memberId} and read_at is null`
+        return c.json({ unread: 0 })
+      })
+
+      .post('/:id/read', async (c) => {
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Notification not found.')
+        const [row] = await deps.sql`
         update public.notifications set read_at = coalesce(read_at, ${now()})
         where id = ${id} and recipient_member_id = ${c.var.auth.memberId} returning id
       `
-      if (!row) throw notFound('Notification not found.')
-      return c.body(null, 204)
-    })
+        if (!row) throw notFound('Notification not found.')
+        return c.body(null, 204)
+      })
+  )
 }
