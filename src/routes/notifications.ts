@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
+import { z } from 'zod'
 import type { AppDeps } from '../app.js'
 import { notFound } from '../lib/errors.js'
-import { uuid } from '../lib/validation.js'
+import { parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, type AuthVariables } from '../middleware/auth.js'
 
 interface Row {
@@ -13,6 +14,12 @@ interface Row {
   read_at: Date | null
   created_at: Date
 }
+
+const Subscription = z.object({
+  endpoint: z.url().startsWith('https://').max(2000),
+  keys: z.object({ p256dh: z.string().min(1).max(200), auth: z.string().min(1).max(100) }),
+})
+const Unsubscribe = z.object({ endpoint: z.string().max(2000) })
 
 /** /v1/notifications — G1.01 the bell: your own in-app notifications, newest first. */
 export function notificationRoutes(deps: AppDeps) {
@@ -34,6 +41,29 @@ export function notificationRoutes(deps: AppDeps) {
         unread: count!.n,
         notifications: rows.map((r) => ({ id: r.id, event: r.event, title: r.title, body: r.body, link: r.link_path, readAt: r.read_at, createdAt: r.created_at })),
       })
+    })
+
+    // Web push: the key browsers need, and this device's subscription. Push follows the in-app choices.
+    .get('/push/key', (c) => c.json({ publicKey: deps.push?.publicKey ?? null }))
+
+    .put('/push/subscription', async (c) => {
+      if (!deps.push) return c.json({ error: { code: 'push_unavailable', message: 'Push notifications aren’t set up yet.' } }, 409)
+      const body = await parseBody(c, Subscription)
+      const { memberId, organisationId } = c.var.auth
+      // One device, one person: signing in as someone else on the same browser moves it to them.
+      await deps.sql`
+        insert into public.push_subscriptions (organisation_id, member_id, endpoint, p256dh, auth, user_agent)
+        values (${organisationId}, ${memberId}, ${body.endpoint}, ${body.keys.p256dh}, ${body.keys.auth}, ${c.req.header('User-Agent')?.slice(0, 300) ?? null})
+        on conflict (endpoint) do update set organisation_id = excluded.organisation_id, member_id = excluded.member_id,
+          p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent
+      `
+      return c.json({ ok: true })
+    })
+
+    .delete('/push/subscription', async (c) => {
+      const body = await parseBody(c, Unsubscribe)
+      await deps.sql`delete from public.push_subscriptions where endpoint = ${body.endpoint} and member_id = ${c.var.auth.memberId}`
+      return c.body(null, 204)
     })
 
     .post('/read-all', async (c) => {

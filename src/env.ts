@@ -38,6 +38,10 @@ const EnvSchema = z.object({
   TRUST_PROXY: z.coerce.number().int().min(0).max(3).default(0),
   /** Cloudflare Turnstile secret (bot check on sign-up and forgot password). Unset = no check. */
   TURNSTILE_SECRET_KEY: z.string().optional(),
+  /** Web push keys (npx web-push generate-vapid-keys). Both or neither; without them there's no push. */
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().default('mailto:hello@synqop.com'),
   CRON_SECRET: z.string().min(24, 'CRON_SECRET must be at least 24 characters').optional(),
 })
 
@@ -58,6 +62,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const zoom = [result.data.ZOOM_CLIENT_ID, result.data.ZOOM_CLIENT_SECRET, result.data.ZOOM_REDIRECT_URL].filter(Boolean).length
   if (zoom > 0 && zoom < 3) {
     throw new Error('Invalid environment configuration:\n  - ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET and ZOOM_REDIRECT_URL: set all three, or none')
+  }
+  if (Boolean(result.data.VAPID_PUBLIC_KEY) !== Boolean(result.data.VAPID_PRIVATE_KEY)) {
+    throw new Error('Invalid environment configuration:\n  - VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY: set both, or neither')
   }
   return result.data
 }

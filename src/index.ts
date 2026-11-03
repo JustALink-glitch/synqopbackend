@@ -7,6 +7,7 @@ import { createSupabaseAuthAdmin } from './lib/auth-admin.js'
 import { createSql } from './lib/db.js'
 import { createConsoleMailer, createResendMailer } from './lib/mailer.js'
 import { startScheduler } from './lib/scheduler.js'
+import { createWebPushSender, startPush } from './lib/push.js'
 import { createSupabaseStorage } from './lib/storage.js'
 import { createZoomApi, tokenBox } from './lib/zoom.js'
 import { createAdminClient } from './lib/supabase.js'
@@ -28,6 +29,10 @@ const zoom =
         apiBase: env.ZOOM_API_BASE,
       })
     : null
+const push =
+  env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY
+    ? createWebPushSender({ publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY, subject: env.VAPID_SUBJECT })
+    : null
 const zoomBox = env.ZOOM_CLIENT_SECRET ? tokenBox(env.ZOOM_CLIENT_SECRET) : null
 
 if (env.NODE_ENV === 'production' && !env.TURNSTILE_SECRET_KEY) {
@@ -46,6 +51,7 @@ const app = createApp({
   cronSecret: env.CRON_SECRET,
   zoom,
   zoomBox,
+  push,
   exposeErrors: env.NODE_ENV === 'development',
   ...(env.TURNSTILE_SECRET_KEY && { humanCheck: createTurnstileCheck(env.TURNSTILE_SECRET_KEY) }),
   ...(env.RATE_LIMIT === 'on' && { rateLimit: { trustProxy: env.TRUST_PROXY } }),
@@ -57,8 +63,11 @@ const server = serve({ fetch: app.fetch, port: env.PORT }, ({ port }) => {
 
 const stopScheduler = env.SCHEDULER === 'on' ? startScheduler({ sql, mailer, appUrl: env.APP_URL, storage, authAdmin, zoom, zoomBox }) : () => {}
 
+const stopPush = push ? startPush({ sql, push }) : () => {}
+
 const shutdown = () => {
   stopScheduler()
+  stopPush()
   server.close()
   void sql.end({ timeout: 5 })
 }

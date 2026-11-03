@@ -61,7 +61,9 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer settings, photos and welcome (T9.01
     const prefs = res.body.preferences as { event: string; when: string; email: boolean; inApp: boolean }[]
     expect(prefs.map((p) => p.event)).toEqual(['report_due', 'report_overdue', 'submissions_to_grade', 'participant_flagged', 'session_changed', 'attendance_missing', 'zoom_review'])
     expect(prefs.find((p) => p.event === 'report_overdue')!.when).toBe('When the 24 hours pass')
-    expect(prefs.find((p) => p.event === 'submissions_to_grade')).toMatchObject({ when: 'Daily digest at 08:00', email: true, inApp: false })
+    // Email by default only for what matters most (session changes); the rest is in-app and push.
+    expect(prefs.find((p) => p.event === 'submissions_to_grade')).toMatchObject({ when: 'Daily digest at 08:00', email: false, inApp: true })
+    expect(prefs.filter((p) => p.email).map((p) => p.event)).toEqual(['session_changed'])
     const put = await req('PUT', '/v1/me/notification-preferences', { token: tokens.ngozi, body: { preferences: [{ event: 'session_changed', email: false, inApp: true }] } })
     expect(put.status).toBe(200)
   })
@@ -143,11 +145,13 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer settings, photos and welcome (T9.01
       insert into attention_flags (organisation_id, enrolment_id, rule, details, raised_at)
       select organisation_id, id, 'missed_in_row', '{"missed": 3}', now() - interval '1 hour' from enrolments where member_id = ${ids.chidi!}
     `
+    // Ngozi wants the grading digest by email only (the default is in-app and push).
+    await req('PUT', '/v1/me/notification-preferences', { token: tokens.ngozi, body: { preferences: [{ event: 'submissions_to_grade', email: true, inApp: false }] } })
     t.mail.sent.length = 0
     await sql`delete from notifications`
     const deps = { sql, mailer: t.mail.mailer, appUrl: 'http://localhost:5173', storage: t.files.storage, authAdmin: t.auth.admin }
     const ran = await runScheduledJobs(deps)
-    // Ngozi: a grading email (in-app off by default) and an in-app flag (email off by default).
+    // Ngozi: a grading email (her choice) and an in-app flag (email off by default).
     expect(t.mail.sent.filter((m) => m.to === 'ngozi@aliwa.org').map((m) => m.subject)).toEqual(['1 submission waiting for your grade'])
     const bell = await sql<{ recipient_member_id: string; event: string; title: string }[]>`select recipient_member_id, event, title from notifications where event in ('submissions_to_grade', 'participant_flagged') order by title`
     expect(bell).toHaveLength(2)

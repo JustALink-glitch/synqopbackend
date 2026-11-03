@@ -17,6 +17,7 @@ import type { AuthAdmin } from './lib/auth-admin.js'
 import type { Sql } from './lib/db.js'
 import { AppError } from './lib/errors.js'
 import type { Mailer } from './lib/mailer.js'
+import { flushPush, type PushSender } from './lib/push.js'
 import type { FileStorage } from './lib/storage.js'
 import { cohortRoutes } from './routes/cohorts.js'
 import { courseRoutes } from './routes/courses.js'
@@ -64,6 +65,8 @@ export interface AppDeps {
   zoomBox?: TokenBox | null
   /** Lets an outside cron run scheduled jobs (POST /v1/internal/run-jobs). Off when unset. */
   cronSecret?: string
+  /** Web push (VAPID). Off when unset: the bell and email still work. */
+  push?: PushSender | null
   /** Show internal error messages in responses. Never true in production. */
   exposeErrors?: boolean
   log?: boolean
@@ -131,7 +134,9 @@ export function createApp(deps: AppDeps) {
     const expected = deps.cronSecret ?? ''
     const ok = expected.length > 0 && given.length === expected.length && timingSafeEqual(Buffer.from(given), Buffer.from(expected))
     if (!ok) return c.json({ error: { code: 'not_found', message: 'Not found.' } }, 404)
-    return c.json({ ran: await runScheduledJobs(deps, deps.now?.()) })
+    const ran = await runScheduledJobs(deps, deps.now?.())
+    const pushed = deps.push ? await flushPush({ sql: deps.sql, push: deps.push }) : 0
+    return c.json({ ran: { ...ran, pushed } })
   })
 
   app.notFound((c) => c.json({ error: { code: 'not_found', message: 'Route not found.' } }, 404))

@@ -2,7 +2,11 @@ import type { Role } from './roles.js'
 import type { Sql, Tx } from './db.js'
 import { renderEmail, type Mailer } from './mailer.js'
 
-/** Notification events people can tune, by role, with their defaults (P8.01 / P8.02). */
+/**
+ * Notification events people can tune, by role, with their defaults (P8.01 / P8.02). In-app also means push on
+ * devices where the person turned it on. Email is on by default only for the important ones: grades and feedback,
+ * session changes, withdrawals, certificates and the daily Needs attention digest.
+ */
 export type NotificationEvent = { key: string; label: string; when: string; email: boolean; inApp: boolean }
 
 /** F1.09 Owners and admins. */
@@ -20,12 +24,12 @@ const ADMIN_EVENTS: NotificationEvent[] = [
 
 /** T9.01 Trainers and assistants. `when` for report and digest events is filled in from the organisation's settings. */
 const TRAINER_EVENTS: NotificationEvent[] = [
-  { key: 'report_due', label: 'Session report due', when: 'Before the due time', email: true, inApp: true },
-  { key: 'report_overdue', label: 'Session report overdue', when: 'When the due time passes', email: true, inApp: true },
-  { key: 'submissions_to_grade', label: 'Submissions to grade', when: 'Daily digest', email: true, inApp: false },
+  { key: 'report_due', label: 'Session report due', when: 'Before the due time', email: false, inApp: true },
+  { key: 'report_overdue', label: 'Session report overdue', when: 'When the due time passes', email: false, inApp: true },
+  { key: 'submissions_to_grade', label: 'Submissions to grade', when: 'Daily digest', email: false, inApp: true },
   { key: 'participant_flagged', label: 'Participant flagged', when: 'In the cohorts you teach', email: false, inApp: true },
   { key: 'session_changed', label: 'Session changed or cancelled', when: 'By an admin', email: true, inApp: true },
-  { key: 'attendance_missing', label: 'Attendance not recorded', when: 'After an in-person session', email: true, inApp: true },
+  { key: 'attendance_missing', label: 'Attendance not recorded', when: 'After an in-person session', email: false, inApp: true },
   { key: 'zoom_review', label: 'Zoom attendees to review', when: 'After an online session', email: false, inApp: true },
 ]
 
@@ -35,8 +39,8 @@ export const EVENTS: Partial<Record<Role, NotificationEvent[]>> = {
   trainer: TRAINER_EVENTS,
   assistant_trainer: TRAINER_EVENTS,
   participant: [
-    { key: 'session_starting', label: 'Session starting soon', when: '1 hour before', email: true, inApp: true },
-    { key: 'assignment_due', label: 'Assignment due', when: '24 hours before', email: true, inApp: true },
+    { key: 'session_starting', label: 'Session starting soon', when: '1 hour before', email: false, inApp: true },
+    { key: 'assignment_due', label: 'Assignment due', when: '24 hours before', email: false, inApp: true },
     { key: 'grade_saved', label: 'New grade or feedback', when: 'When a trainer saves it', email: true, inApp: true },
     { key: 'session_changed', label: 'Session changed or cancelled', when: 'Straight away', email: true, inApp: true },
     { key: 'new_resource', label: 'New recording or resource', when: 'Daily digest', email: false, inApp: true },

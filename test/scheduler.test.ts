@@ -57,6 +57,12 @@ describe.skipIf(!TEST_DATABASE_URL)('scheduled jobs (X2)', () => {
     ids.chidi = await participant('Chidi Nwosu', 'chidi@example.com')
     ids.amara = await participant('Amara Okafor', 'amara@example.com')
     ids.bisi = await participant('Bisi Ade', 'bisi@example.com', false)
+    // Reminders are in-app and push by default (email only for important things); these people chose email too.
+    await sql`
+      insert into notification_preferences (organisation_id, member_id, event, email, in_app)
+      select m.organisation_id, m.id, e, true, true from organisation_members m,
+        unnest(array['session_starting', 'assignment_due', 'report_due', 'report_overdue', 'attendance_missing']) as e
+    `
     // Start each test with an empty outbox and no sessions.
   })
 
@@ -68,6 +74,18 @@ describe.skipIf(!TEST_DATABASE_URL)('scheduled jobs (X2)', () => {
 
   afterAll(async () => {
     await drop?.()
+  })
+
+  it('sends reminders to the bell, not email, unless people choose email', async () => {
+    await sql`delete from notification_preferences where member_id = ${ids.chidi!} and event = 'session_starting'`
+    await session(0.5)
+    await run()
+    expect(to('chidi@example.com')).toHaveLength(0)
+    expect(await sql`select 1 from notifications where event = 'session_starting' and recipient_member_id = ${ids.chidi!}`).toHaveLength(1)
+    await sql`
+      insert into notification_preferences (organisation_id, member_id, event, email, in_app)
+      select organisation_id, id, 'session_starting', true, true from organisation_members where id = ${ids.chidi!}
+    `
   })
 
   it('reminds participants once before a session, respecting their choices (X2.01)', async () => {

@@ -1,3 +1,4 @@
+import type { PushSender } from '../../src/lib/push.js'
 import type { HumanCheck } from '../../src/lib/human-check.js'
 import { createApp } from '../../src/app.js'
 import { createMembershipLoader } from '../../src/lib/auth.js'
@@ -109,7 +110,7 @@ export function fakeStorage() {
 /**
  * App wired to a real test database. Tokens are "user:<uuid>:<email>" so tests can act as anyone.
  */
-export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox; humanCheck?: HumanCheck } = {}) {
+export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox; humanCheck?: HumanCheck; push?: PushSender } = {}) {
   const auth = fakeAuthAdmin(sql)
   const mail = fakeMailer()
   const files = fakeStorage()
@@ -129,6 +130,7 @@ export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; z
     log: false,
     ...(options.now && { now: options.now }),
     ...(options.humanCheck && { humanCheck: options.humanCheck }),
+    ...(options.push && { push: options.push }),
     ...(options.zoom && { zoom: options.zoom, zoomBox: options.zoomBox ?? null }),
   })
   return { app, auth, mail, files }

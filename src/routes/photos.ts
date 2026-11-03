@@ -27,14 +27,12 @@ export function photoRoutes(deps: AppDeps) {
         ${participant ? deps.sql`and (role <> 'participant' or id = ${auth.memberId})` : deps.sql``}
     `
     const paths = rows.map((r) => r.path)
-    let urls: Record<string, string> = {}
-    try {
-      urls = deps.storage.viewUrls
-        ? await deps.storage.viewUrls(paths, SECONDS)
-        : Object.fromEntries(await Promise.all(paths.map(async (p) => [p, await deps.storage.viewUrl(p, SECONDS)] as const)))
-    } catch {
-      urls = {}
-    }
+    // Photos are a nicety: if storage can't sign them, everyone shows as initials.
+    const urls: Record<string, string> = await (
+      deps.storage.viewUrls
+        ? deps.storage.viewUrls(paths, SECONDS)
+        : Promise.all(paths.map(async (p) => [p, await deps.storage.viewUrl(p, SECONDS)] as const)).then(Object.fromEntries)
+    ).catch(() => ({}))
     const photos: Record<string, string> = {}
     for (const r of rows) if (urls[r.path]) photos[r.id] = urls[r.path]!
     c.header('Cache-Control', 'private, max-age=600')
