@@ -54,7 +54,7 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer assign, edit, deactivate (B2.04–B
 
   it('assigns as lead, moving the old lead to assistant (B2.04)', async () => {
     const res = await post(`/v1/members/${ids.ngozi}/assignments`, { cohortId: ids.cohort, courseId: ids.python, role: 'lead' })
-    expect(res.body).toEqual({ course: 'Python', cohort: 'Cohort 5', replaced: 'Tunde Adeyemi' })
+    expect(res.body).toEqual({ course: 'Python', courses: ['Python'], cohort: 'Cohort 5', replaced: 'Tunde Adeyemi' })
     expect((await detail()).assignments.map((a) => [a.course.name, a.cohort.name, a.lead, a.planned])).toEqual([['Python', 'Cohort 5', true, 10]])
     expect((await detail(ids.tunde)).assignments.map((a) => a.lead)).toEqual([false])
     expect((await post(`/v1/members/${ids.ngozi}/assignments`, { cohortId: ids.cohort, courseId: randomUUID(), role: 'lead' })).body.error!.details).toEqual([

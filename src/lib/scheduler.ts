@@ -148,7 +148,8 @@ async function assignmentReminders(deps: SchedulerDeps, org: Org, now: Date) {
   const due = await deps.sql<{ id: string; title: string; course: string; cohort_id: string; due_at: Date }[]>`
     select a.id, a.title, co.name as course, x.cohort_id, a.due_at
     from public.assignments a join public.cohort_courses x on x.id = a.cohort_course_id join public.courses co on co.id = x.course_id
-    where a.organisation_id = ${org.id} and a.published_at is not null
+    join public.cohorts h on h.id = x.cohort_id
+    where a.organisation_id = ${org.id} and a.published_at is not null and public.status(h) not in ('upcoming', 'draft')
       and a.due_at > ${now} and a.due_at <= ${new Date(now.getTime() + org.assignment_hours * 3_600_000)}
   `
   let n = 0

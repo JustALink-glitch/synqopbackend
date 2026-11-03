@@ -277,8 +277,11 @@ export function myLearningRoutes(deps: AppDeps) {
           deps.sql<{ cohort_course_id: string; published: number; submitted: number }[]>`
             select a.cohort_course_id, count(*)::int as published, count(s.id)::int as submitted
             from public.assignments a
+            join public.cohort_courses x on x.id = a.cohort_course_id
+            join public.cohorts h on h.id = x.cohort_id
             left join public.submissions s on s.assignment_id = a.id and s.member_id = ${auth.memberId}
             where a.organisation_id = ${auth.organisationId} and a.published_at is not null
+              and public.status(h) not in ('upcoming', 'draft')
             group by a.cohort_course_id
           `,
           timeZoneOf(auth.organisationId),

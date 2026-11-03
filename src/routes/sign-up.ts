@@ -26,19 +26,12 @@ export function signUpRoutes(deps: AppDeps) {
     const redirectTo = new URL('/signup/organisation', deps.appUrl).toString()
     const result = await deps.authAdmin.generateSignupLink({ email: body.email, password: body.password, name, redirectTo })
     if (!result.ok && result.reason === 'weak_password') throw new AppError(400, 'weak_password', 'Choose a stronger password.')
-    // Same answer whether or not the email has an account, so sign-up can't be used to find out who uses Synqop.
-    // The owner of an existing account gets a note pointing them to sign in instead.
+    // Pilot feedback (Nov 2026, owner's decision): say so on screen instead of emailing. This tells anyone who tries
+    // that the email uses Synqop; the sign-up request limit (10 an hour per IP) keeps that from being done in bulk.
     if (!result.ok) {
-      const existing = renderEmail({
-        title: 'You already have a Synqop account',
-        intro: `Someone tried to create a Synqop account with ${body.email}, but this email already has one. If it was you, sign in instead, or reset your password if you’ve forgotten it.`,
-        buttonLabel: 'Sign in',
-        buttonUrl: new URL('/sign-in', deps.appUrl).toString(),
-        note: `Forgotten your password? ${new URL('/forgot-password', deps.appUrl).toString()}`,
-        footer: 'Didn’t try to sign up? Ignore this email. Nothing has changed on your account.',
-      })
-      await deps.mailer.send({ to: body.email, subject: 'You already have a Synqop account', text: existing.text, html: existing.html })
-      return c.json({ sent: true }, 201)
+      throw new AppError(409, 'account_exists', 'You already have a Synqop account with this email. Sign in instead, or reset your password.', [
+        { field: 'email', message: 'You already have a Synqop account with this email.' },
+      ])
     }
 
     const { text, html } = renderEmail({

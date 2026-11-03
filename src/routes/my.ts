@@ -72,7 +72,7 @@ interface MyRow {
   total: number | null
 }
 
-/** Published assignments in the participant's cohorts (active or completed), with their own work and grade. */
+/** Published assignments in the participant's cohorts, with their own work and grade. Hidden until the cohort starts (pilot feedback, Nov 2026). */
 function selectMine(sql: Sql | Tx, auth: AuthContext, id?: string) {
   return sql<MyRow[]>`
     select a.id, a.title, a.brief, a.due_at, a.submission_types::text[] as submission_types, a.late_policy, a.grading_scale, a.max_points,
@@ -96,6 +96,7 @@ function selectMine(sql: Sql | Tx, auth: AuthContext, id?: string) {
     left join public.organisation_members gb on gb.id = g.graded_by
     where e.member_id = ${auth.memberId} and e.organisation_id = ${auth.organisationId}
       and e.status in ('active', 'completed')
+      and public.status(h) not in ('upcoming', 'draft')
       ${id ? sql`and a.id = ${id}` : sql``}
     order by a.due_at, a.title
   `

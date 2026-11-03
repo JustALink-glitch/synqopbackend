@@ -87,6 +87,20 @@ describe.skipIf(!TEST_DATABASE_URL)('participant work (P5, P6) and files', () =>
     expect((await get('/v1/assignments', tokens.chidi!)).status).toBe(403)
   })
 
+  it('hides assignments until the cohort starts (pilot feedback)', async () => {
+    const id = await assignment({ title: 'Early bird' })
+    const cohortId = (await sql<{ cohort_id: string }[]>`select cohort_id from cohort_courses where id = ${cc}`)[0]!.cohort_id
+    await sql`update cohorts set starts_on = current_date + 7 where id = ${cohortId}`
+    try {
+      const titles = ((await get('/v1/my/assignments', tokens.chidi!)).body.assignments as { title: string }[]).map((a) => a.title)
+      expect(titles).not.toContain('Early bird')
+      expect((await get(`/v1/my/assignments/${id}`, tokens.chidi!)).status).toBe(404)
+      expect((await post(`/v1/my/assignments/${id}/uploads`, { name: 'a.pdf', size: 10 }, tokens.chidi!)).status).toBe(404)
+    } finally {
+      await sql`update cohorts set starts_on = current_date - 30 where id = ${cohortId}`
+    }
+  })
+
   it('submits a file through a signed upload, and only my own path counts (P5.02)', async () => {
     const id = await assignment({ title: 'Notebook' })
     const upload = await post(`/v1/my/assignments/${id}/uploads`, { name: 'my notebook (v2).ipynb', size: 2048, type: 'application/json' }, tokens.chidi!)

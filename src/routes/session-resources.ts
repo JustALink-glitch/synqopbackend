@@ -11,13 +11,13 @@ import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
 import { parseBody, uuid } from '../lib/validation.js'
 import type { AuthVariables } from '../middleware/auth.js'
 
-const Upload = z.object({
+export const Upload = z.object({
   name: z.string().trim().min(1).max(200),
   size: z.number().int().min(1, 'This file is empty.').max(MAX_FILE_BYTES, 'Files can be up to 25 MB.'),
   type: z.string().max(200).nullish(),
 })
 
-const Resource = z
+export const Resource = z
   .object({
     kind: z.enum(['file', 'link']),
     name: z.string().trim().min(1, 'Enter a title.').max(200),

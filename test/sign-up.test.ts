@@ -67,11 +67,12 @@ describe.skipIf(!TEST_DATABASE_URL)('sign-up through the API (R1.01) and the bot
     expect(email.html).toContain('https://auth.example/verify?type=signup')
   })
 
-  it('answers the same for an email that already has an account, and tells its owner instead (no account lookup)', async () => {
+  it('says on screen when the email already has an account, and sends nothing (pilot feedback)', async () => {
+    const sent = t.mail.sent.length
     const res = await req('POST', '/v1/auth/sign-up', { body })
-    expect(res.status).toBe(201)
-    expect(res.body).toEqual({ sent: true })
-    expect(t.mail.sent.at(-1)).toMatchObject({ to: 'ada@aliwa.org', subject: 'You already have a Synqop account' })
+    expect(res.status).toBe(409)
+    expect(res.body.error).toMatchObject({ code: 'account_exists', details: [{ field: 'email' }] })
+    expect(t.mail.sent.length).toBe(sent)
     expect(await sql`select 1 from auth.users`).toHaveLength(1)
   })
 

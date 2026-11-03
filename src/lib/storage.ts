@@ -18,6 +18,8 @@ export interface FileStorage {
   downloadUrl(path: string, fileName: string): Promise<string>
   /** A link to show the file in the page (e.g. a profile photo), valid for `seconds`. */
   viewUrl(path: string, seconds: number): Promise<string>
+  /** Several view links in one call (profile photos in lists). Falls back to viewUrl when missing. */
+  viewUrls?(paths: string[], seconds: number): Promise<Record<string, string>>
   remove(paths: string[]): Promise<void>
   /** The file's bytes, or null if it's gone. For data exports (F1.10). */
   read(path: string): Promise<Uint8Array | null>
@@ -49,6 +51,14 @@ export function createSupabaseStorage(supabase: SupabaseClient): FileStorage {
       const { data, error } = await bucket().createSignedUrl(path, seconds)
       if (error) throw error
       return data.signedUrl
+    },
+    async viewUrls(paths, seconds) {
+      if (!paths.length) return {}
+      const { data, error } = await bucket().createSignedUrls(paths, seconds)
+      if (error) throw error
+      const out: Record<string, string> = {}
+      for (const d of data) if (d.path && d.signedUrl && !d.error) out[d.path] = d.signedUrl
+      return out
     },
     async remove(paths) {
       if (!paths.length) return
