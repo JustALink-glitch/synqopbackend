@@ -5,6 +5,7 @@ import type { AuthContext } from '../lib/auth.js'
 import { audit, type Sql } from '../lib/db.js'
 import { AppError, forbidden, notFound } from '../lib/errors.js'
 import { renderEmail } from '../lib/mailer.js'
+import { notify } from '../lib/notifications.js'
 import { can, isAdmin, staffScope, teachingIds, type StaffScope } from '../lib/staff.js'
 import { parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
@@ -246,6 +247,22 @@ export function reportRoutes(deps: AppDeps) {
             data: { late: body.submit && !row.submitted_at ? t > row.due_at : undefined },
             requestId: c.var.requestId,
           })
+          // Admins hear when a report comes in (first submission only; later edits stay quiet).
+          if (body.submit && !row.submitted_at) {
+            const [me] = await tx<{ name: string; tz: string }[]>`
+              select trim(m.first_name || ' ' || coalesce(m.last_name, '')) as name, o.time_zone as tz
+              from public.organisation_members m join public.organisations o on o.id = m.organisation_id where m.id = ${auth.memberId}
+            `
+            const day = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: me?.tz ?? 'UTC' }).format(row.starts_at).replace(',', '')
+            await notify(tx, {
+              organisationId: auth.organisationId,
+              to: { roles: ['owner', 'admin'] },
+              event: 'report_submitted',
+              title: `${me?.name ?? 'A trainer'} submitted a session report`,
+              body: `${row.course_name} · ${row.cohort_name} · ${day}${t > row.due_at ? ' · late' : ''}`,
+              link: `/admin/courses/reports/${row.session_id}`,
+            })
+          }
         })
         return c.json({ saved: true, submitted: body.submit })
       })

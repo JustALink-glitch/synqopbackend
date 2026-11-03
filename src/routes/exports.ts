@@ -10,6 +10,17 @@ import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth
 
 const COHORT_KINDS: ReportKind[] = ['cohort_summary', 'attendance', 'assignments']
 
+const Params = z
+  .object({
+    kind: z.enum(REPORT_KINDS),
+    programmeId: uuid,
+    cohortId: uuid.nullish().transform((v) => v ?? null),
+    from: isoDate.nullish().transform((v) => v ?? null),
+    to: isoDate.nullish().transform((v) => v ?? null),
+  })
+  .refine((v) => !COHORT_KINDS.includes(v.kind) || v.cohortId, { path: ['cohortId'], message: 'Choose a cohort.' })
+  .refine((v) => !v.from || !v.to || v.from <= v.to, { path: ['to'], message: 'Choose a date on or after the start.' })
+
 const Generate = z
   .object({
     kind: z.enum(REPORT_KINDS),
@@ -70,7 +81,8 @@ export function exportRoutes(deps: AppDeps) {
     }
   }
 
-  async function start(organisationId: string, memberId: string, params: ReportParams, format: 'pdf' | 'csv', requestId: string | undefined) {
+  /** The programme (or cohort) the report covers; refuses one from another organisation. */
+  async function scopeOf(organisationId: string, params: ReportParams) {
     const [programme] = await deps.sql<{ name: string }[]>`select name from public.programmes where id = ${params.programmeId} and organisation_id = ${organisationId}`
     if (!programme) throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'programmeId', message: 'Choose a programme.' }])
     let scopeName = programme.name
@@ -79,6 +91,11 @@ export function exportRoutes(deps: AppDeps) {
       if (!cohort) throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'cohortId', message: 'Choose a cohort in this programme.' }])
       scopeName = cohort.name
     }
+    return scopeName
+  }
+
+  async function start(organisationId: string, memberId: string, params: ReportParams, format: 'pdf' | 'csv', requestId: string | undefined) {
+    const scopeName = await scopeOf(organisationId, params)
     const [row] = await deps.sql<{ id: string }[]>`
       insert into public.generated_reports (organisation_id, requested_by, kind, parameters, format, title, subtitle)
       values (${organisationId}, ${memberId}, ${params.kind}, ${deps.sql.json(params as never)}, ${format}, ${`${kindLabel[params.kind]} — ${scopeName}`}, ${periodLabel(params.from, params.to)})
@@ -124,6 +141,16 @@ export function exportRoutes(deps: AppDeps) {
             completedAt: r.completed_at,
           })),
         })
+      })
+
+      // E1.03 Live preview: the same figures the file will hold, straight from today's data.
+      .post('/preview', async (c) => {
+        const body = await parseBody(c, Params)
+        const { organisationId } = c.var.auth
+        const params = { kind: body.kind, programmeId: body.programmeId, cohortId: body.cohortId, from: body.from, to: body.to }
+        await scopeOf(organisationId, params)
+        const doc = await buildReport(deps.sql, organisationId, params)
+        return c.json({ preview: { ...doc, period: periodLabel(params.from, params.to) } })
       })
 
       // E1.02 Generate report.

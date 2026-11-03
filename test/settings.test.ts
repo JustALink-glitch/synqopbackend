@@ -144,6 +144,7 @@ describe.skipIf(!TEST_DATABASE_URL)('settings part A (F1.01, F1.02, F1.04, F1.07
     const prefs = res.body.preferences as { event: string; email: boolean; inApp: boolean }[]
     expect(prefs.map((p) => p.event)).toEqual([
       'attention_flags',
+      'report_submitted',
       'report_overdue',
       'attendance_missing',
       'zoom_review',
@@ -152,6 +153,7 @@ describe.skipIf(!TEST_DATABASE_URL)('settings part A (F1.01, F1.02, F1.04, F1.07
       'import_finished',
       'report_ready',
       'invitation_accepted',
+      'announcement',
     ])
     expect(prefs[0]).toMatchObject({ email: true, inApp: true })
     await put('/v1/me/notification-preferences', { preferences: [{ event: 'report_ready', email: true, inApp: false }], digestTime: '07:30' })

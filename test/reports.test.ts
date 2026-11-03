@@ -117,8 +117,12 @@ describe.skipIf(!TEST_DATABASE_URL)('session reports and Today (T5, C3, F1.08, T
     const done = await get(`/v1/session-reports/${ids.due}`, ngozi)
     expect(done.body).toMatchObject({ state: 'submitted', report: { summary: 'Covered loops and functions.', author: 'You', onTime: true }, can: { write: true, edit: true } })
     expect((done.body.report as { answers: Record<string, string[]> }).answers[q3!.id]).toEqual(['Connectivity', 'Venue or equipment'])
+    // Admins hear about it once, in the bell (and push), not by email.
+    const told = await sql<{ title: string; link_path: string }[]>`select title, link_path from notifications where event = 'report_submitted'`
+    expect(told).toEqual([{ title: 'Ngozi Eze submitted a session report', link_path: `/admin/courses/reports/${ids.due}` }])
     // Still editable until it's due.
     expect((await put(`/v1/session-reports/${ids.due}`, { answers, summary: 'Covered loops, functions and pandas.', submit: true }, ngozi)).status).toBe(200)
+    expect(await sql`select 1 from notifications where event = 'report_submitted'`).toHaveLength(1)
     await sql`update sessions set ends_at = now() - interval '30 hours', starts_at = now() - interval '32 hours' where id = ${ids.due!}`
     const locked = await put(`/v1/session-reports/${ids.due}`, { answers, summary: 'Late edit', submit: true }, ngozi)
     expect(locked.body.error!.code).toBe('report_locked')

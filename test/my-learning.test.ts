@@ -144,7 +144,7 @@ describe.skipIf(!TEST_DATABASE_URL)('participant learning (P2, P3, P4, P8)', () 
     await req('PUT', '/v1/me/notification-preferences', { token: tokens.chidi!, body: { preferences: [{ event: 'assignment_due', email: false, inApp: true }, { event: 'made_up', email: true, inApp: true }] } })
     const after = await get('/v1/me/notification-preferences', tokens.chidi!)
     expect((after.body.preferences as { event: string; email: boolean }[]).find((p) => p.event === 'assignment_due')).toMatchObject({ email: false })
-    expect((after.body.preferences as unknown[]).length).toBe(5)
+    expect((after.body.preferences as unknown[]).length).toBe(6)
   })
 
   it('collects anonymous session feedback (P4.03, C5.01, T7.04)', async () => {

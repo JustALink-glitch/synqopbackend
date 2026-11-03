@@ -61,6 +61,18 @@ describe.skipIf(!TEST_DATABASE_URL)('reports (E1)', () => {
     expect((await post('/v1/reports', { kind: 'feedback', programmeId: ids.programme, format: 'pdf' }, trainerToken)).status).toBe(403)
   })
 
+  it('previews a report live, with the same figures, before any file is made', async () => {
+    const res = await post('/v1/reports/preview', { kind: 'attendance', programmeId: ids.programme, cohortId: ids.cohort })
+    expect(res.status).toBe(200)
+    const preview = res.body.preview as { title: string; period: string; sections: { heading: string; columns?: string[]; rows?: unknown[][] }[] }
+    expect(preview.title).toBe('Attendance — Cohort 5')
+    expect(preview.period).toBeTruthy()
+    expect(preview.sections.some((x) => x.rows && x.rows.length > 0)).toBe(true)
+    expect(await sql`select 1 from generated_reports where parameters->>'kind' = 'attendance' and status = 'queued'`).toHaveLength(0)
+    expect((await post('/v1/reports/preview', { kind: 'attendance', programmeId: ids.programme })).status).toBe(400)
+    expect((await post('/v1/reports/preview', { kind: 'feedback', programmeId: randomUUID() })).status).toBe(400)
+  })
+
   it('generates a CSV of attendance (E1.03, E1.04)', async () => {
     const res = await post('/v1/reports', { kind: 'attendance', programmeId: ids.programme, cohortId: ids.cohort, from: day(-7), to: day(0), format: 'csv' })
     expect(res.status).toBe(202)

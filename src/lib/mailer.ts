@@ -74,7 +74,7 @@ export function renderEmail(input: {
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#FFFFFF;border:1px solid #E7ECF1;border-radius:12px;padding:32px">
         <tr><td style="font-size:15px;font-weight:600;color:#2563EB;padding-bottom:24px">Synqop</td></tr>
         <tr><td style="font-size:20px;line-height:28px;font-weight:600;padding-bottom:12px">${escapeHtml(input.title)}</td></tr>
-        <tr><td style="font-size:14px;line-height:20px;color:#5C6777;padding-bottom:24px">${escapeHtml(input.intro)}</td></tr>
+        <tr><td style="font-size:14px;line-height:20px;color:#5C6777;padding-bottom:24px;white-space:pre-line">${escapeHtml(input.intro)}</td></tr>
         ${
           input.details?.length
             ? `<tr><td style="padding-bottom:24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7ECF1;border-radius:8px;border-collapse:separate">${input.details

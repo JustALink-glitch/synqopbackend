@@ -12,6 +12,7 @@ export type NotificationEvent = { key: string; label: string; when: string; emai
 /** F1.09 Owners and admins. */
 const ADMIN_EVENTS: NotificationEvent[] = [
   { key: 'attention_flags', label: 'New Needs attention flags', when: 'Daily digest', email: true, inApp: true },
+  { key: 'report_submitted', label: 'Session report submitted', when: 'When a trainer submits it', email: false, inApp: true },
   { key: 'report_overdue', label: 'Session report overdue', when: '', email: false, inApp: true },
   { key: 'attendance_missing', label: 'Attendance not recorded', when: '2 hours after a session ends', email: false, inApp: true },
   { key: 'zoom_review', label: 'Zoom attendees to review', when: 'Names Synqop couldn’t match', email: false, inApp: true },
@@ -20,6 +21,7 @@ const ADMIN_EVENTS: NotificationEvent[] = [
   { key: 'import_finished', label: 'Import finished', when: '', email: false, inApp: true },
   { key: 'report_ready', label: 'Report ready to download', when: '', email: false, inApp: true },
   { key: 'invitation_accepted', label: 'Invitation accepted', when: 'Trainers and members', email: false, inApp: true },
+  { key: 'announcement', label: 'Announcements', when: 'Email only for ones marked important', email: true, inApp: true },
 ]
 
 /** T9.01 Trainers and assistants. `when` for report and digest events is filled in from the organisation's settings. */
@@ -31,6 +33,7 @@ const TRAINER_EVENTS: NotificationEvent[] = [
   { key: 'session_changed', label: 'Session changed or cancelled', when: 'By an admin', email: true, inApp: true },
   { key: 'attendance_missing', label: 'Attendance not recorded', when: 'After an in-person session', email: false, inApp: true },
   { key: 'zoom_review', label: 'Zoom attendees to review', when: 'After an online session', email: false, inApp: true },
+  { key: 'announcement', label: 'Announcements', when: 'Email only for ones marked important', email: true, inApp: true },
 ]
 
 export const EVENTS: Partial<Record<Role, NotificationEvent[]>> = {
@@ -39,11 +42,12 @@ export const EVENTS: Partial<Record<Role, NotificationEvent[]>> = {
   trainer: TRAINER_EVENTS,
   assistant_trainer: TRAINER_EVENTS,
   participant: [
-    { key: 'session_starting', label: 'Session starting soon', when: '1 hour before', email: false, inApp: true },
+      { key: 'session_starting', label: 'Session starting soon', when: '1 hour before', email: false, inApp: true },
     { key: 'assignment_due', label: 'Assignment due', when: '24 hours before', email: false, inApp: true },
     { key: 'grade_saved', label: 'New grade or feedback', when: 'When a trainer saves it', email: true, inApp: true },
     { key: 'session_changed', label: 'Session changed or cancelled', when: 'Straight away', email: true, inApp: true },
     { key: 'new_resource', label: 'New recording or resource', when: 'Daily digest', email: false, inApp: true },
+    { key: 'announcement', label: 'Announcements', when: 'Email only for ones marked important', email: true, inApp: true },
   ],
 }
 
