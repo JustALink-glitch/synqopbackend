@@ -4,7 +4,8 @@ import { deliver } from './notifications.js'
 import { withZoom, ZoomError, type TokenBox, type ZoomApi, type ZoomParticipant } from './zoom.js'
 
 /**
- * Zoom work the scheduler does every minute for connected organisations (F1.07, C1.02, C2.04):
+ * Zoom work for connected organisations (F1.07, C1.02, C2.04), run by the scheduler and, through `zoomSoon`, just after
+ * a session is scheduled, changed or cancelled:
  * keep a Zoom meeting for every upcoming online session, register participants for personal links,
  * and import attendance once each meeting has ended. Nothing here runs inside a user's request,
  * so Zoom being slow or down never blocks scheduling.
@@ -38,6 +39,40 @@ interface SessionRow {
 
 const errorText = (error: unknown) =>
   error instanceof ZoomError ? `Zoom: ${error.message}` : `Couldn’t reach Zoom (${(error as Error).message ?? 'unknown error'}). Synqop will try again.`
+
+const queues = new Map<string, Promise<unknown>>()
+
+/** One Zoom run at a time per organisation on this server, so a save and the scheduler never make two meetings. */
+export function syncZoomQueued(deps: ZoomSyncDeps, organisationId: string, now?: Date): Promise<ZoomCounts> {
+  const run = (queues.get(organisationId) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => syncZoom(deps, organisationId, now ?? new Date()))
+  queues.set(organisationId, run)
+  void run
+    .finally(() => {
+      if (queues.get(organisationId) === run) queues.delete(organisationId)
+    })
+    .catch(() => undefined)
+  return run
+}
+
+const soon = new Set<string>()
+
+/**
+ * Meetings within seconds of a save (pilot feedback, Nov 2026), instead of waiting for the next scheduler run.
+ * Runs after the response; saves close together (a repeating series) share one run. If Zoom is slow or down,
+ * the scheduler tries again.
+ */
+export function zoomSoon(deps: ZoomSyncDeps, delayMs = 400) {
+  return (organisationId: string) => {
+    if (soon.has(organisationId)) return
+    soon.add(organisationId)
+    setTimeout(() => {
+      soon.delete(organisationId)
+      syncZoomQueued(deps, organisationId).catch((error) => console.error(`Zoom sync failed for ${organisationId}`, error))
+    }, delayMs).unref?.()
+  }
+}
 
 export async function syncZoom(deps: ZoomSyncDeps, organisationId: string, now = new Date()): Promise<ZoomCounts> {
   const counts: ZoomCounts = { created: 0, updated: 0, deleted: 0, registered: 0, imported: 0, failed: 0 }

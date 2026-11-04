@@ -110,7 +110,7 @@ export function fakeStorage() {
 /**
  * App wired to a real test database. Tokens are "user:<uuid>:<email>" so tests can act as anyone.
  */
-export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox; humanCheck?: HumanCheck; push?: PushSender } = {}) {
+export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; zoomBox?: TokenBox; zoomSoon?: (organisationId: string) => void; humanCheck?: HumanCheck; push?: PushSender } = {}) {
   const auth = fakeAuthAdmin(sql)
   const mail = fakeMailer()
   const files = fakeStorage()
@@ -132,6 +132,7 @@ export function testApp(sql: Sql, options: { now?: () => Date; zoom?: ZoomApi; z
     ...(options.humanCheck && { humanCheck: options.humanCheck }),
     ...(options.push && { push: options.push }),
     ...(options.zoom && { zoom: options.zoom, zoomBox: options.zoomBox ?? null }),
+    ...(options.zoomSoon && { zoomSoon: options.zoomSoon }),
   })
   return { app, auth, mail, files }
 }

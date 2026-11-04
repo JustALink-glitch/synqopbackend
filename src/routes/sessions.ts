@@ -472,6 +472,7 @@ export function sessionRoutes(deps: AppDeps) {
             result.ids[0]!,
           )
         }
+        deps.zoomSoon?.(organisationId)
         return c.json({ created: result.ids.length, firstSessionId: result.ids[0] }, 201)
       })
 
@@ -560,6 +561,7 @@ export function sessionRoutes(deps: AppDeps) {
                 : `the ${session.course_name} session in ${session.cohort_name} has changed. It's now ${describeWhen(fresh, tz)}${fresh.mode === 'online' ? ', online' : fresh.location ? ` at ${fresh.location}` : ''}.`,
           })
         }
+        deps.zoomSoon?.(organisationId)
         return c.json({ updated, emailed })
       })
 
@@ -600,6 +602,7 @@ export function sessionRoutes(deps: AppDeps) {
             intro: () => `the ${session.course_name} session on ${describeWhen(session, tz)} is cancelled. Reason: ${body.reason}`,
           })
         }
+        deps.zoomSoon?.(organisationId)
         return c.json({ cancelled: true, emailed })
       })
 

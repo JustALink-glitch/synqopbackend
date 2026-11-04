@@ -10,6 +10,7 @@ import { startScheduler } from './lib/scheduler.js'
 import { createWebPushSender, startPush } from './lib/push.js'
 import { createSupabaseStorage } from './lib/storage.js'
 import { createZoomApi, tokenBox } from './lib/zoom.js'
+import { zoomSoon } from './lib/zoom-sync.js'
 import { createAdminClient } from './lib/supabase.js'
 
 const env = loadEnv()
@@ -39,6 +40,8 @@ if (env.NODE_ENV === 'production' && !env.TURNSTILE_SECRET_KEY) {
   console.warn('TURNSTILE_SECRET_KEY is not set: sign-up and forgot password have no bot check.')
 }
 
+const zoomNow = zoom && zoomBox ? zoomSoon({ sql, mailer, appUrl: env.APP_URL, zoom, box: zoomBox }) : undefined
+
 const app = createApp({
   corsOrigins: env.CORS_ORIGINS,
   appUrl: env.APP_URL,
@@ -51,6 +54,7 @@ const app = createApp({
   cronSecret: env.CRON_SECRET,
   zoom,
   zoomBox,
+  zoomSoon: zoomNow,
   push,
   exposeErrors: env.NODE_ENV === 'development',
   ...(env.TURNSTILE_SECRET_KEY && { humanCheck: createTurnstileCheck(env.TURNSTILE_SECRET_KEY) }),

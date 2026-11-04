@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Sql } from '../src/lib/db.js'
 import { addDays } from '../src/lib/schedule.js'
-import { syncZoom, type ZoomSyncDeps } from '../src/lib/zoom-sync.js'
+import { syncZoom, syncZoomQueued, zoomSoon, type ZoomSyncDeps } from '../src/lib/zoom-sync.js'
 import { tokenBox, ZoomError, type MeetingInput, type ZoomApi, type ZoomParticipant } from '../src/lib/zoom.js'
 import { createTestDatabase, TEST_DATABASE_URL } from './helpers/db.js'
 import { as, client, testApp } from './helpers/app.js'
@@ -196,6 +196,25 @@ describe.skipIf(!TEST_DATABASE_URL)('Zoom (F1.07, C1.02, C2.01, C2.04)', () => {
     await post(`/v1/sessions/${s2}/cancel`, { reason: 'Holiday', notify: false })
     expect((await sync()).deleted).toBe(1)
     expect(zoom.calls.at(-1)).toBe('delete 2')
+  })
+
+  it('makes the meeting within moments of saving, not at the next scheduler run', async () => {
+    const soonApp = client(testApp(sql, { zoom: zoom.api, zoomBox: box, zoomSoon: zoomSoon(deps, 0) }).app)
+    const before = zoom.calls.filter((c) => c.startsWith('create')).length
+    const res = await soonApp('POST', '/v1/sessions', { token, body: { cohortId: ids.cohort, courseId: ids.course, date: day(5), start: '10:00', end: '12:00', mode: 'online' } })
+    const id = (res.body as { firstSessionId: string }).firstSessionId
+    let row: { zoom_managed: boolean } | undefined
+    for (let i = 0; i < 50 && !row?.zoom_managed; i++) {
+      await new Promise((r) => setTimeout(r, 20))
+      ;[row] = await sql<{ zoom_managed: boolean }[]>`select zoom_managed from sessions where id = ${id}`
+    }
+    expect(row?.zoom_managed).toBe(true)
+    // A scheduler run at the same moment waits its turn instead of making a second meeting.
+    await Promise.all([syncZoomQueued(deps, ids.org!), syncZoomQueued(deps, ids.org!)])
+    expect(zoom.calls.filter((c) => c.startsWith('create')).length).toBe(before + 1)
+    await soonApp('POST', `/v1/sessions/${id}/cancel`, { token, body: { reason: 'Test', notify: false } })
+    for (let i = 0; i < 50 && zoom.meetings.has(String(before + 1)) && !zoom.calls.includes(`delete ${before + 1}`); i++) await new Promise((r) => setTimeout(r, 20))
+    expect(zoom.calls).toContain(`delete ${before + 1}`)
   })
 
   it('refreshes tokens, and marks the connection broken when Zoom stops accepting it', async () => {

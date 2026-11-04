@@ -4,7 +4,7 @@ import type { Sql } from './db.js'
 import type { Mailer } from './mailer.js'
 import { deliver } from './notifications.js'
 import type { FileStorage } from './storage.js'
-import { syncZoom } from './zoom-sync.js'
+import { syncZoomQueued } from './zoom-sync.js'
 import type { TokenBox, ZoomApi } from './zoom.js'
 
 /**
@@ -73,7 +73,7 @@ export async function runScheduledJobs(deps: SchedulerDeps, now = new Date()): P
   for (const org of orgs) {
     try {
       if (org.zoom && deps.zoom && deps.zoomBox) {
-        const z = await syncZoom({ ...deps, zoom: deps.zoom, box: deps.zoomBox }, org.id, now)
+        const z = await syncZoomQueued({ ...deps, zoom: deps.zoom, box: deps.zoomBox }, org.id, now)
         counts.zoom += z.created + z.updated + z.deleted + z.registered + z.imported
       }
       counts.sessionReminders += await sessionReminders(deps, org, now)

@@ -65,6 +65,8 @@ export interface AppDeps {
   /** Zoom app (F1.07). Null when this server has no Zoom keys. */
   zoom?: ZoomApi | null
   zoomBox?: TokenBox | null
+  /** Starts Zoom work for an organisation just after a session changes (F1.07). Unset: the scheduler does it. */
+  zoomSoon?: (organisationId: string) => void
   /** Lets an outside cron run scheduled jobs (POST /v1/internal/run-jobs). Off when unset. */
   cronSecret?: string
   /** Web push (VAPID). Off when unset: the bell and email still work. */

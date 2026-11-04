@@ -76,6 +76,8 @@ export function zoomRoutes(deps: AppDeps) {
             requestId: c.var.requestId,
           })
         })
+        // Meetings for upcoming online sessions straight away, not at the next scheduler run.
+        deps.zoomSoon?.(organisationId)
         return c.json({ connected: true, email: me.email })
       })
 
