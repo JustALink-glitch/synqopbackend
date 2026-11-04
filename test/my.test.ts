@@ -127,6 +127,11 @@ describe.skipIf(!TEST_DATABASE_URL)('participant work (P5, P6) and files', () =>
     expect((await get(`/v1/my/assignments/${id}/files/${fileId}`, tokens.chidi!)).body.url).toContain(path)
     expect((await get(`/v1/my/assignments/${id}/files/${fileId}`, tokens.amara!)).status).toBe(404)
     expect((await get(`/v1/assignments/${id}/files/${fileId}`, trainerToken)).body.url).toContain('download=notebook.ipynb')
+    expect((await get(`/v1/assignments/${id}/files/${fileId}?view=1`, trainerToken)).body.url).not.toContain('download=')
+
+    // The trainer hears straight away, and the link opens Chidi's work.
+    const [heard] = await sql<{ title: string; link_path: string }[]>`select title, link_path from notifications where event = 'submission_received' order by created_at desc limit 1`
+    expect(heard).toMatchObject({ title: expect.stringMatching(/handed in work$/), link_path: `/trainer/grading/${id}/submissions/${people.chidi}` })
 
     // Replacing before the due time swaps the file and deletes the old one.
     await req('PUT', `/v1/my/assignments/${id}/submission`, { token: tokens.chidi!, body: { type: 'link', link: 'https://github.com/chidi/py2' } })

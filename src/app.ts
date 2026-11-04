@@ -45,6 +45,7 @@ import { exportRoutes } from './routes/exports.js'
 import { overviewRoutes } from './routes/overview.js'
 import { reportRoutes } from './routes/reports.js'
 import { settingsRoutes } from './routes/settings.js'
+import { activityRoutes } from './routes/activity.js'
 import { trainerRoutes } from './routes/trainer.js'
 
 export interface AppDeps {
@@ -121,6 +122,7 @@ export function createApp(deps: AppDeps) {
   app.route('/v1/trainer', trainerRoutes(deps))
   app.route('/v1/completion', completionRoutes(deps))
   app.route('/v1/settings', settingsRoutes(deps))
+  app.route('/v1/activity', activityRoutes(deps))
   app.route('/v1/session-reports', reportRoutes(deps))
   app.route('/v1/overview', overviewRoutes(deps))
   app.route('/v1/reports', exportRoutes(deps))

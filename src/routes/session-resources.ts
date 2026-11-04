@@ -7,7 +7,7 @@ import type { AuthContext } from '../lib/auth.js'
 import { audit, type Sql } from '../lib/db.js'
 import { AppError, forbidden, notFound } from '../lib/errors.js'
 import { can, staffScope } from '../lib/staff.js'
-import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
+import { MAX_FILE_BYTES, safeFileName, fileLink } from '../lib/storage.js'
 import { parseBody, uuid } from '../lib/validation.js'
 import type { AuthVariables } from '../middleware/auth.js'
 
@@ -155,7 +155,7 @@ export function sessionResourceRoutes(deps: AppDeps) {
           where id = ${resourceId} and (cohort_course_id = ${session.cohort_course_id} or course_id = (select x.course_id from public.cohort_courses x where x.id = ${session.cohort_course_id}))
         `
         if (!r) throw notFound('Resource not found.')
-        return c.json({ url: r.storage_path ? await deps.storage.downloadUrl(r.storage_path, r.name) : r.url })
+        return c.json({ url: r.storage_path ? await fileLink(deps.storage, c.req.query('view') === '1', r.storage_path, r.name) : r.url })
       })
   )
 }

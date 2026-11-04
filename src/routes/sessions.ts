@@ -293,6 +293,20 @@ export function sessionRoutes(deps: AppDeps) {
     return sent
   }
 
+  /** Admins hear about schedule changes trainers make (pilot feedback, Nov 2026), in the bell and by push only. */
+  async function tellAdmins(auth: { organisationId: string; memberId: string; role: Role }, title: string, body: string, sessionId: string | null) {
+    if (auth.role !== 'trainer' && auth.role !== 'assistant_trainer') return
+    const [me] = await deps.sql<{ first_name: string; last_name: string }[]>`select first_name, last_name from public.organisation_members where id = ${auth.memberId}`
+    await inApp(deps.sql, {
+      organisationId: auth.organisationId,
+      to: { roles: ['owner', 'admin'] },
+      event: 'trainer_session_change',
+      title,
+      body: `${body} · by ${`${me?.first_name ?? ''} ${me?.last_name ?? ''}`.trim() || 'a trainer'}`,
+      link: sessionId ? `/admin/courses/sessions/${sessionId}` : '/admin/courses/sessions',
+    })
+  }
+
   const describeWhen = (row: Pick<SessionRow, 'starts_at' | 'ends_at'>, tz: string) => {
     const day = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: tz }).format(row.starts_at)
     const t = (d: Date) => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }).format(d)
@@ -448,6 +462,16 @@ export function sessionRoutes(deps: AppDeps) {
           })
           return { ids }
         })
+        if (result.ids.length) {
+          const fresh = await findSession(deps.sql, organisationId, result.ids[0]!)
+          const { time_zone: tz } = await timeZoneOf(deps.sql, organisationId)
+          await tellAdmins(
+            c.var.auth,
+            result.ids.length > 1 ? `${result.ids.length} ${fresh.course_name} sessions scheduled` : `${fresh.course_name}: session scheduled`,
+            `${fresh.cohort_name} · ${result.ids.length > 1 ? 'from ' : ''}${describeWhen(fresh, tz)}`,
+            result.ids[0]!,
+          )
+        }
         return c.json({ created: result.ids.length, firstSessionId: result.ids[0] }, 201)
       })
 
@@ -514,8 +538,14 @@ export function sessionRoutes(deps: AppDeps) {
         })
 
         let emailed = 0
+        const fresh = await findSession(deps.sql, organisationId, session.id)
+        await tellAdmins(
+          c.var.auth,
+          updated > 1 ? `${updated} ${session.course_name} sessions changed` : `${session.course_name}: session changed`,
+          `${session.cohort_name} · was ${describeWhen(session, tz)}, now ${describeWhen(fresh, tz)}`,
+          session.id,
+        )
         if (body.notify) {
-          const fresh = await findSession(deps.sql, organisationId, session.id)
           emailed = await notify({
             organisationId,
             organisationName,
@@ -556,8 +586,9 @@ export function sessionRoutes(deps: AppDeps) {
           })
         })
         let emailed = 0
+        const { time_zone: tz, name: organisationName } = await timeZoneOf(deps.sql, organisationId)
+        await tellAdmins(c.var.auth, `Cancelled: ${session.course_name}, ${describeWhen(session, tz)}`, `${session.cohort_name} · ${body.reason}`, session.id)
         if (body.notify) {
-          const { time_zone: tz, name: organisationName } = await timeZoneOf(deps.sql, organisationId)
           emailed = await notify({
             organisationId,
             organisationName,

@@ -59,7 +59,7 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer settings, photos and welcome (T9.01
   it('lists trainer notifications with timings from the organisation’s settings (T9.02)', async () => {
     const res = await req('GET', '/v1/me/notification-preferences', { token: tokens.ngozi })
     const prefs = res.body.preferences as { event: string; when: string; email: boolean; inApp: boolean }[]
-    expect(prefs.map((p) => p.event)).toEqual(['report_due', 'report_overdue', 'submissions_to_grade', 'participant_flagged', 'session_changed', 'attendance_missing', 'zoom_review', 'announcement'])
+    expect(prefs.map((p) => p.event)).toEqual(['report_due', 'report_overdue', 'submission_received', 'submissions_to_grade', 'participant_flagged', 'session_changed', 'attendance_missing', 'zoom_review', 'announcement'])
     expect(prefs.find((p) => p.event === 'report_overdue')!.when).toBe('When the 24 hours pass')
     // Email by default only for what matters most (session changes); the rest is in-app and push.
     expect(prefs.find((p) => p.event === 'submissions_to_grade')).toMatchObject({ when: 'Daily digest at 08:00', email: false, inApp: true })

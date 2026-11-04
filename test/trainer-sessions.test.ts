@@ -113,6 +113,35 @@ describe.skipIf(!TEST_DATABASE_URL)('trainer sessions, register, resources and c
     expect((await post(`/v1/sessions/${ids.heldSql}/cancel`, { reason: 'x' }, ngozi)).status).toBe(404)
   })
 
+  it('tells admins, in the bell only, when a trainer schedules, changes or cancels a session (pilot feedback)', async () => {
+    const rows = await sql<{ title: string; body: string; link_path: string }[]>`
+      select n.title, n.body, n.link_path from notifications n join organisation_members m on m.id = n.recipient_member_id
+      where n.event = 'trainer_session_change' and m.role = 'owner' order by n.created_at, n.title
+    `
+    expect(rows.map((r) => r.title)).toEqual(expect.arrayContaining(['4 Python sessions scheduled', 'Python: session changed', expect.stringMatching(/^Cancelled: Python, /)]))
+    expect(rows.find((r) => r.title === 'Python: session changed')!.body).toMatch(/^Cohort 5 · was .+, now .+ · by Ngozi Eze$/)
+    expect(rows.every((r) => r.link_path.startsWith('/admin/courses/sessions/'))).toBe(true)
+    // Admins' own changes don't notify admins.
+    const before = rows.length
+    expect((await post('/v1/sessions', { cohortId: ids.cohort, courseId: ids.python, date: day(4), start: '10:00', end: '12:00', mode: 'online' })).status).toBe(201)
+    const [count] = await sql<{ n: number }[]>`select count(*)::int as n from notifications where event = 'trainer_session_change'`
+    expect(count!.n).toBe(before)
+  })
+
+  it('lists the activity log for admins only, newest first, filtered by who and what (pilot feedback)', async () => {
+    expect((await get('/v1/activity', ngozi)).status).toBe(403)
+    const all = (await get('/v1/activity')).body as { events: { action: string; actor: { name: string; role: string }; entity: { name: string | null } }[]; next: string | null }
+    expect(all.events.length).toBeGreaterThan(3)
+    const trainers = (await get('/v1/activity?who=trainers')).body.events as typeof all.events
+    expect(trainers.length).toBeGreaterThan(0)
+    expect(trainers.every((e) => e.actor.role === 'trainer' || e.actor.role === 'assistant_trainer')).toBe(true)
+    expect(trainers.find((e) => e.action === 'session.updated')).toMatchObject({ actor: { name: 'Ngozi Eze' }, entity: { name: 'Python' } })
+    const sessions = (await get('/v1/activity?who=all&group=sessions')).body.events as typeof all.events
+    expect(sessions.every((e) => /^(session|sessions|session_report|attendance)\./.test(e.action))).toBe(true)
+    const programmes = (await get('/v1/activity?group=programmes')).body.events as typeof all.events
+    expect(programmes.map((e) => e.action)).toEqual(expect.arrayContaining(['cohort.created', 'course.created']))
+  })
+
   it('lets the course’s trainers take the register; assistants only if allowed (T4.01–T4.03)', async () => {
     const marks = { marks: [{ memberId: ids.amara, status: 'present' }] }
     expect((await req('GET', `/v1/sessions/${ids.heldPython}/attendance`, { token: ngozi })).body.expected).toBe(1)

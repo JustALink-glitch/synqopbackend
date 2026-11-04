@@ -4,7 +4,7 @@ import type { AppDeps } from '../app.js'
 import { audit, isPg, PG, type Sql, type Tx } from '../lib/db.js'
 import { randomUUID } from 'node:crypto'
 import { AppError, notFound } from '../lib/errors.js'
-import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
+import { MAX_FILE_BYTES, safeFileName, fileLink } from '../lib/storage.js'
 import { requireMemberWithRole } from '../lib/people.js'
 import { optionalText, parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
@@ -344,7 +344,7 @@ export function courseRoutes(deps: AppDeps) {
         where r.id = ${rid} and (r.course_id = ${course.id} or x.course_id = ${course.id})
       `
       if (!r) throw notFound('Resource not found.')
-      return c.json({ url: r.storage_path ? await deps.storage.downloadUrl(r.storage_path, r.name) : r.url })
+      return c.json({ url: r.storage_path ? await fileLink(deps.storage, c.req.query('view') === '1', r.storage_path, r.name) : r.url })
     })
 
     .delete('/:id/resources/:resourceId', async (c) => {

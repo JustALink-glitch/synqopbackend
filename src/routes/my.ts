@@ -5,7 +5,8 @@ import type { AppDeps } from '../app.js'
 import type { AuthContext } from '../lib/auth.js'
 import { audit, type Sql, type Tx } from '../lib/db.js'
 import { AppError, notFound } from '../lib/errors.js'
-import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
+import { notify } from '../lib/notifications.js'
+import { MAX_FILE_BYTES, safeFileName, fileLink } from '../lib/storage.js'
 import { optionalText, parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
 import { gradeDisplay, scaleLabel, type Scale } from './assignments.js'
@@ -293,6 +294,22 @@ export function myRoutes(deps: AppDeps) {
             data: { assignmentId: r.id, type: body.type, late },
             requestId: c.var.requestId,
           })
+          // The course's trainers hear straight away (pilot feedback, Nov 2026); the daily "to grade" digest stays.
+          const trainers = await tx<{ id: string; who: string }[]>`
+            select t.member_id as id, (select trim(m.first_name || ' ' || m.last_name) from public.organisation_members m where m.id = ${auth.memberId}) as who
+            from public.assignments a join public.cohort_course_trainers t on t.cohort_course_id = a.cohort_course_id
+            where a.id = ${r.id}
+          `
+          if (trainers.length) {
+            await notify(tx, {
+              organisationId: auth.organisationId,
+              to: { memberIds: trainers.map((t) => t.id) },
+              event: 'submission_received',
+              title: `${trainers[0]!.who} ${r.submission_id ? 'replaced their work' : 'handed in work'}${late ? ' (late)' : ''}`,
+              body: r.title,
+              link: `/trainer/grading/${r.id}/submissions/${auth.memberId}`,
+            })
+          }
           return old.map((o) => o.storage_path).filter((p) => p !== file?.path)
         })
         // Old files go once the new submission is saved; a failure here only leaves an orphan.
@@ -314,7 +331,7 @@ export function myRoutes(deps: AppDeps) {
           where f.id = ${fileId} and s.assignment_id = ${r.id} and s.member_id = ${auth.memberId}
         `
         if (!file) throw notFound('File not found.')
-        return c.json({ url: await deps.storage.downloadUrl(file.storage_path, file.name) })
+        return c.json({ url: await fileLink(deps.storage, c.req.query('view') === '1', file.storage_path, file.name) })
       })
 
       // P6.01 Grades & feedback: everything handed in, graded or waiting.

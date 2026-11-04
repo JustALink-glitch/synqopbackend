@@ -6,7 +6,7 @@ import { audit } from '../lib/db.js'
 import { AppError, forbidden, notFound } from '../lib/errors.js'
 import { notify } from '../lib/notifications.js'
 import { can, staffScope } from '../lib/staff.js'
-import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
+import { MAX_FILE_BYTES, safeFileName, fileLink } from '../lib/storage.js'
 import { parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
 import { Resource, toResource, Upload, type ResourceRow } from './session-resources.js'
@@ -114,7 +114,7 @@ export function cohortCourseResourceRoutes(deps: AppDeps) {
         select name, storage_path, url from public.resources where id = ${resourceId} and ((cohort_course_id = ${cc.id} and session_id is null) or course_id = ${cc.course_id})
       `
       if (!r) throw notFound('Resource not found.')
-      return c.json({ url: r.storage_path ? await deps.storage.downloadUrl(r.storage_path, r.name) : r.url })
+      return c.json({ url: r.storage_path ? await fileLink(deps.storage, c.req.query('view') === '1', r.storage_path, r.name) : r.url })
     })
     .delete('/:id/resources/:resourceId', async (c) => {
       const auth = c.var.auth

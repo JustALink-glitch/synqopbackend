@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { fileLink } from '../lib/storage.js'
 import { z } from 'zod'
 import type { AppDeps } from '../app.js'
 import type { AuthContext } from '../lib/auth.js'
@@ -138,8 +139,8 @@ export function myLearningRoutes(deps: AppDeps) {
   }
 
   async function resourcesOf(cohortCourseId: string, sessionId?: string) {
-    return deps.sql<{ id: string; kind: 'file' | 'link'; name: string; url: string | null; size_bytes: string | null; session_id: string | null }[]>`
-      select id, kind, name, url, size_bytes, session_id from public.resources
+    return deps.sql<{ id: string; kind: 'file' | 'link'; name: string; url: string | null; size_bytes: string | null; mime_type: string | null; session_id: string | null }[]>`
+      select id, kind, name, url, size_bytes, mime_type, session_id from public.resources
       where visible_to_participants
         and ((cohort_course_id = ${cohortCourseId} ${sessionId ? deps.sql`and (session_id = ${sessionId} or session_id is null)` : deps.sql``})
              or course_id = (select x.course_id from public.cohort_courses x where x.id = ${cohortCourseId}))
@@ -152,6 +153,7 @@ export function myLearningRoutes(deps: AppDeps) {
     name: r.name,
     url: r.kind === 'link' ? r.url : null,
     size: r.size_bytes === null ? null : Number(r.size_bytes),
+    type: r.mime_type,
   })
 
   return (
@@ -352,7 +354,7 @@ export function myLearningRoutes(deps: AppDeps) {
           where r.id = ${id} and r.organisation_id = ${auth.organisationId} and r.visible_to_participants
         `
         if (!file) throw notFound('Resource not found.')
-        return c.json({ url: file.storage_path ? await deps.storage.downloadUrl(file.storage_path, file.name) : file.url })
+        return c.json({ url: file.storage_path ? await fileLink(deps.storage, c.req.query('view') === '1', file.storage_path, file.name) : file.url })
       })
   )
 }

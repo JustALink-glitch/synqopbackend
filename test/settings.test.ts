@@ -146,6 +146,7 @@ describe.skipIf(!TEST_DATABASE_URL)('settings part A (F1.01, F1.02, F1.04, F1.07
       'attention_flags',
       'report_submitted',
       'report_overdue',
+      'trainer_session_change',
       'attendance_missing',
       'zoom_review',
       'participant_left',

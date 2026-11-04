@@ -85,3 +85,11 @@ export function safeFileName(name: string): string {
     .replace(/\s+/g, '-')
   return (cleaned || 'file').slice(-120)
 }
+
+/**
+ * A short-lived link to a stored file. `?view=1` opens it in the browser (PDFs, images, video, audio, text) instead of
+ * downloading it (pilot feedback, Nov 2026: trainers and participants couldn't look at a resource without saving it).
+ */
+export function fileLink(storage: FileStorage, view: boolean, path: string, fileName: string): Promise<string> {
+  return view ? storage.viewUrl(path, 300) : storage.downloadUrl(path, fileName)
+}

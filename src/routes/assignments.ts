@@ -5,7 +5,7 @@ import { z } from 'zod'
 import type { AppDeps } from '../app.js'
 import { audit, type Sql, type Tx } from '../lib/db.js'
 import { AppError, forbidden, notFound } from '../lib/errors.js'
-import { MAX_FILE_BYTES, safeFileName } from '../lib/storage.js'
+import { MAX_FILE_BYTES, safeFileName, fileLink } from '../lib/storage.js'
 import { isoDate, optionalText, parseBody, uuid } from '../lib/validation.js'
 import type { AuthContext } from '../lib/auth.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
@@ -545,7 +545,7 @@ export function assignmentRoutes(deps: AppDeps) {
           where f.id = ${fileId} and s.assignment_id = ${a.id}
         `
         if (!file) throw notFound('File not found.')
-        return c.json({ url: await deps.storage.downloadUrl(file.storage_path, file.name) })
+        return c.json({ url: await fileLink(deps.storage, c.req.query('view') === '1', file.storage_path, file.name) })
       })
 
       // T6.03 / C4.02 Assignment with everyone's status.

@@ -14,6 +14,7 @@ const ADMIN_EVENTS: NotificationEvent[] = [
   { key: 'attention_flags', label: 'New Needs attention flags', when: 'Daily digest', email: true, inApp: true },
   { key: 'report_submitted', label: 'Session report submitted', when: 'When a trainer submits it', email: false, inApp: true },
   { key: 'report_overdue', label: 'Session report overdue', when: '', email: false, inApp: true },
+  { key: 'trainer_session_change', label: 'Sessions scheduled, changed or cancelled by trainers', when: 'Straight away', email: false, inApp: true },
   { key: 'attendance_missing', label: 'Attendance not recorded', when: '2 hours after a session ends', email: false, inApp: true },
   { key: 'zoom_review', label: 'Zoom attendees to review', when: 'Names Synqop couldn’t match', email: false, inApp: true },
   { key: 'participant_left', label: 'Participant deferred or withdrawn', when: '', email: true, inApp: true },
@@ -28,6 +29,7 @@ const ADMIN_EVENTS: NotificationEvent[] = [
 const TRAINER_EVENTS: NotificationEvent[] = [
   { key: 'report_due', label: 'Session report due', when: 'Before the due time', email: false, inApp: true },
   { key: 'report_overdue', label: 'Session report overdue', when: 'When the due time passes', email: false, inApp: true },
+  { key: 'submission_received', label: 'Work handed in', when: 'When a participant submits', email: false, inApp: true },
   { key: 'submissions_to_grade', label: 'Submissions to grade', when: 'Daily digest', email: false, inApp: true },
   { key: 'participant_flagged', label: 'Participant flagged', when: 'In the cohorts you teach', email: false, inApp: true },
   { key: 'session_changed', label: 'Session changed or cancelled', when: 'By an admin', email: true, inApp: true },
