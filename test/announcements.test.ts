@@ -136,6 +136,32 @@ describe.skipIf(!TEST_DATABASE_URL)('announcements (G1.03)', () => {
     expect(((await req('GET', '/v1/announcements', { token: tk.chidi })).body.announcements as { read: boolean }[]).every((x) => x.read)).toBe(true)
   })
 
+  it('records who has seen each one, shown only to the author and admins', async () => {
+    type Seen = Item & { seenBy: { count: number; recent: { name: string }[] } | null }
+    const of = async (token: string | undefined) => (await req('GET', '/v1/announcements', { token })).body.announcements as Seen[]
+    const holiday = (await of(tk.ada)).find((a) => a.title === 'Holiday on Friday')!
+    const laptops = (await of(tk.ada)).find((a) => a.title === 'Bring laptops')!
+    // Bisi can only be counted on what was addressed to her; repeats count once.
+    expect((await req('POST', '/v1/announcements/seen', { token: tk.bisi, body: { ids: [holiday.id, laptops.id, holiday.id] } })).status).toBe(204)
+    expect((await req('POST', '/v1/announcements/seen', { token: tk.bisi, body: { ids: [holiday.id] } })).status).toBe(204)
+    const [{ n }] = (await sql`select count(*)::int as n from announcement_views v join organisation_members m on m.id = v.member_id
+      where m.email = 'bisi@example.com'`) as unknown as [{ n: number }]
+    expect(n).toBe(1)
+    // Chidi marked everything read earlier, which also counts as seen.
+    const ngozi = (await of(tk.ngozi)).find((a) => a.id === laptops.id)!
+    expect(ngozi.seenBy).toMatchObject({ count: 1, recent: [{ name: 'Chidi Nwosu' }] })
+    expect((await of(tk.ngozi)).find((a) => a.id === holiday.id)!.seenBy).toBeNull()
+    expect((await of(tk.chidi)).every((a) => a.seenBy === null)).toBe(true)
+    expect((await of(tk.ada)).find((a) => a.id === holiday.id)!.seenBy!.count).toBe(2)
+    const views = await req('GET', `/v1/announcements/${laptops.id}/views`, { token: tk.ngozi })
+    expect(views.body).toMatchObject({ seen: [{ name: 'Chidi Nwosu', role: 'participant' }], notSeen: [{ name: 'Ada Obi', role: 'owner' }] })
+    expect((await req('GET', `/v1/announcements/${laptops.id}/views`, { token: tk.chidi })).status).toBe(403)
+    expect((await req('GET', `/v1/announcements/${holiday.id}/views`, { token: tk.ada })).body).toMatchObject({
+      seen: [{ name: expect.any(String) }, { name: expect.any(String) }],
+      notSeen: [{ name: 'Ngozi Eze' }],
+    })
+  })
+
   it('lets the author or an admin edit and delete, and deleting clears the bell', async () => {
     const mine = ((await req('GET', '/v1/announcements', { token: tk.chidi })).body.announcements as Item[]).find((a) => a.title === 'Bring laptops')!
     expect(mine.can.edit).toBe(false)

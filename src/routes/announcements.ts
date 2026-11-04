@@ -42,6 +42,8 @@ interface Row {
   author_last: string | null
   author_role: Role | null
   read: boolean
+  seen_count: number | null
+  seen_recent: { id: string; name: string }[] | null
 }
 
 const STAFF: Role[] = ['owner', 'admin', 'trainer', 'assistant_trainer']
@@ -73,7 +75,15 @@ export function announcementRoutes(deps: AppDeps) {
     return deps.sql<Row[]>`
       select a.id, a.audience, a.cohort_id, h.name as cohort_name, a.title, a.body, a.important, a.created_at, a.updated_at,
              m.id as author_id, m.first_name as author_first, m.last_name as author_last, m.role as author_role,
-             (a.author_member_id = ${auth.memberId} or exists (select 1 from public.announcement_reads r where r.announcement_id = a.id and r.member_id = ${auth.memberId})) as read
+             (a.author_member_id = ${auth.memberId} or exists (select 1 from public.announcement_reads r where r.announcement_id = a.id and r.member_id = ${auth.memberId})) as read,
+             -- How many have seen it: only for the author and admins (the only ones shown it), counted from its own index.
+             case when ${admin} or a.author_member_id = ${auth.memberId}
+               then (select count(*)::int from public.announcement_views v where v.announcement_id = a.id and v.member_id is distinct from a.author_member_id) end as seen_count,
+             case when ${admin} or a.author_member_id = ${auth.memberId}
+               then (select coalesce(json_agg(json_build_object('id', x.id, 'name', x.name)), '[]'::json) from (
+                       select vm.id, trim(vm.first_name || ' ' || coalesce(vm.last_name, '')) as name from public.announcement_views v
+                       join public.organisation_members vm on vm.id = v.member_id
+                       where v.announcement_id = a.id and v.member_id is distinct from a.author_member_id order by v.seen_at desc limit 3) x) end as seen_recent
       from public.announcements a
       left join public.cohorts h on h.id = a.cohort_id
       left join public.organisation_members m on m.id = a.author_member_id
@@ -101,8 +111,38 @@ export function announcementRoutes(deps: AppDeps) {
     createdAt: r.created_at,
     edited: r.updated_at.getTime() - r.created_at.getTime() > 60_000,
     read: r.read,
+    seenBy: r.seen_count === null ? null : { count: r.seen_count, recent: r.seen_recent ?? [] },
     can: { edit: r.author_id === auth.memberId || isAdmin(auth) },
   })
+
+  /** Seen once per person; later visits change nothing. */
+  async function recordSeen(auth: AuthContext, ids: string[]) {
+    if (!ids.length) return
+    await deps.sql`
+      insert into public.announcement_views (announcement_id, member_id)
+      select id, ${auth.memberId} from unnest(${ids}::uuid[]) as id on conflict do nothing
+    `
+  }
+
+  /** Everyone an announcement is addressed to today (active members, not the author) — the same people it notified. */
+  const audienceOf = (organisationId: string, a: { audience: Audience; cohort_id: string | null; author_id: string | null }) =>
+    deps.sql<{ id: string; first_name: string; last_name: string | null; role: Role }[]>`
+      select m.id, m.first_name, m.last_name, m.role from public.organisation_members m
+      where m.organisation_id = ${organisationId} and m.status = 'active' and m.id is distinct from ${a.author_id}
+        and ${
+          a.audience === 'everyone'
+            ? deps.sql`true`
+            : a.audience === 'staff'
+              ? deps.sql`m.role <> 'participant'`
+              : a.audience === 'participants'
+                ? deps.sql`m.role = 'participant'`
+                : deps.sql`(m.role in ('owner', 'admin')
+                    or exists (select 1 from public.enrolments e where e.member_id = m.id and e.cohort_id = ${a.cohort_id} and e.status = 'active')
+                    or exists (select 1 from public.cohort_course_trainers t join public.cohort_courses x on x.id = t.cohort_course_id
+                               where t.member_id = m.id and x.cohort_id = ${a.cohort_id}))`
+        }
+      order by m.first_name, m.last_name
+    `
 
   async function markRead(auth: AuthContext, ids: string[]) {
     if (!ids.length) return
@@ -110,6 +150,7 @@ export function announcementRoutes(deps: AppDeps) {
       insert into public.announcement_reads (announcement_id, member_id)
       select id, ${auth.memberId} from unnest(${ids}::uuid[]) as id on conflict do nothing
     `
+    await recordSeen(auth, ids)
     const links = ids.map((id) => '%#' + id)
     await deps.sql`
       update public.notifications set read_at = coalesce(read_at, now())
@@ -121,93 +162,131 @@ export function announcementRoutes(deps: AppDeps) {
   const page = (role: Role) =>
     role === 'participant' ? '/participant/announcements' : role === 'owner' || role === 'admin' ? '/admin/announcements' : '/trainer/announcements'
 
-  return new Hono<{ Variables: AuthVariables }>()
-    .use(requireAuth(deps))
+  return (
+    new Hono<{ Variables: AuthVariables }>()
+      .use(requireAuth(deps))
 
-    .get('/', async (c) => {
-      const auth = c.var.auth
-      const rows = await visible(auth)
-      const admin = isAdmin(auth)
-      const staff = isStaff(auth.role)
-      // Where this person can post: admins anywhere; trainers to cohorts they teach; participants nowhere.
-      const cohorts = admin
-        ? await deps.sql<{ id: string; name: string }[]>`
+      .get('/', async (c) => {
+        const auth = c.var.auth
+        const rows = await visible(auth)
+        const admin = isAdmin(auth)
+        const staff = isStaff(auth.role)
+        // Where this person can post: admins anywhere; trainers to cohorts they teach; participants nowhere.
+        const cohorts = admin
+          ? await deps.sql<{ id: string; name: string }[]>`
             select id, name from public.cohorts where organisation_id = ${auth.organisationId} and archived_at is null order by starts_on desc nulls last, name
           `
-        : staff
-          ? await deps.sql<{ id: string; name: string }[]>`
+          : staff
+            ? await deps.sql<{ id: string; name: string }[]>`
               select id, name from public.cohorts where id = any(${await taughtCohorts(deps.sql, auth.memberId)}::uuid[]) and archived_at is null order by starts_on desc nulls last, name
             `
-          : []
-      return c.json({
-        unread: rows.filter((r) => !r.read).length,
-        announcements: rows.map((r) => toJson(r, auth)),
-        canPost: admin || (staff && cohorts.length > 0),
-        audiences: admin ? ['everyone', 'staff', 'participants', 'cohort'] : staff && cohorts.length ? ['cohort'] : [],
-        cohorts,
+            : []
+        return c.json({
+          unread: rows.filter((r) => !r.read).length,
+          announcements: rows.map((r) => toJson(r, auth)),
+          canPost: admin || (staff && cohorts.length > 0),
+          audiences: admin ? ['everyone', 'staff', 'participants', 'cohort'] : staff && cohorts.length ? ['cohort'] : [],
+          cohorts,
+        })
       })
-    })
 
-    // The menu badge: how many this person hasn't marked read.
-    .get('/unread', async (c) => c.json({ unread: (await visible(c.var.auth)).filter((r) => !r.read).length }))
+      // The menu badge: how many this person hasn't marked read.
+      .get('/unread', async (c) => c.json({ unread: (await visible(c.var.auth)).filter((r) => !r.read).length }))
 
-    // "Mark as read": takes it out of the count and clears its notification from the bell.
-    .post('/read-all', async (c) => {
-      const auth = c.var.auth
-      const ids = (await visible(auth)).filter((r) => !r.read).map((r) => r.id)
-      await markRead(auth, ids)
-      return c.json({ unread: 0 })
-    })
+      // Cards that came onto someone's screen, sent in one batch per visit. Their own posts aren't counted.
+      .post('/seen', async (c) => {
+        const auth = c.var.auth
+        const { ids } = await parseBody(c, z.object({ ids: z.array(uuid).min(1).max(200) }))
+        const mine = new Set((await visible(auth)).filter((r) => r.author_id !== auth.memberId).map((r) => r.id))
+        await recordSeen(
+          auth,
+          [...new Set(ids)].filter((id) => mine.has(id)),
+        )
+        return c.body(null, 204)
+      })
 
-    .post('/:id/read', async (c) => {
-      const auth = c.var.auth
-      const id = c.req.param('id')
-      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
-      const [row] = await visible(auth, id)
-      if (!row) throw notFound('Announcement not found.')
-      await markRead(auth, [id])
-      return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
-    })
+      // Who has and hasn't seen it — for the author and admins, loaded only when they open the list.
+      .get('/:id/views', async (c) => {
+        const auth = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+        const [row] = await visible(auth, id)
+        if (!row) throw notFound('Announcement not found.')
+        if (row.author_id !== auth.memberId && !isAdmin(auth)) throw forbidden('Only the author or an admin can see who has viewed this.')
+        const [audience, views] = await Promise.all([
+          audienceOf(auth.organisationId, row),
+          deps.sql<{ member_id: string; seen_at: Date; first_name: string; last_name: string | null; role: Role }[]>`
+          select v.member_id, v.seen_at, m.first_name, m.last_name, m.role from public.announcement_views v
+          join public.organisation_members m on m.id = v.member_id
+          where v.announcement_id = ${id} and v.member_id is distinct from ${row.author_id}
+          order by v.seen_at desc
+        `,
+        ])
+        const seenIds = new Set(views.map((v) => v.member_id))
+        const name = (p: { first_name: string; last_name: string | null }) => `${p.first_name} ${p.last_name ?? ''}`.trim()
+        return c.json({
+          seen: views.map((v) => ({ id: v.member_id, name: name(v), role: v.role, at: v.seen_at })),
+          notSeen: audience.filter((p) => !seenIds.has(p.id)).map((p) => ({ id: p.id, name: name(p), role: p.role })),
+        })
+      })
 
-    .delete('/:id/read', async (c) => {
-      const auth = c.var.auth
-      const id = c.req.param('id')
-      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
-      await deps.sql`delete from public.announcement_reads where announcement_id = ${id} and member_id = ${auth.memberId}`
-      return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
-    })
+      // "Mark as read": takes it out of the count and clears its notification from the bell.
+      .post('/read-all', async (c) => {
+        const auth = c.var.auth
+        const ids = (await visible(auth)).filter((r) => !r.read).map((r) => r.id)
+        await markRead(auth, ids)
+        return c.json({ unread: 0 })
+      })
 
-    .post('/', async (c) => {
-      const auth = c.var.auth
-      const body = await parseBody(c, Write)
-      const admin = isAdmin(auth)
-      if (!admin && !isStaff(auth.role)) throw forbidden('Only admins and trainers can post announcements.')
-      if (!admin && body.audience !== 'cohort') throw forbidden('Trainers post to the cohorts they teach.')
-      if (body.audience === 'cohort') {
-        const [cohort] =
-          await deps.sql`select 1 from public.cohorts where id = ${body.cohortId} and organisation_id = ${auth.organisationId} and archived_at is null`
-        const mine = admin || (await taughtCohorts(deps.sql, auth.memberId)).includes(body.cohortId!)
-        if (!cohort || !mine)
-          throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'cohortId', message: 'Choose one of your cohorts.' }])
-      }
-      const cohortId = body.audience === 'cohort' ? body.cohortId : null
-      const [row] = await deps.sql<{ id: string }[]>`
+      .post('/:id/read', async (c) => {
+        const auth = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+        const [row] = await visible(auth, id)
+        if (!row) throw notFound('Announcement not found.')
+        await markRead(auth, [id])
+        return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
+      })
+
+      .delete('/:id/read', async (c) => {
+        const auth = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+        await deps.sql`delete from public.announcement_reads where announcement_id = ${id} and member_id = ${auth.memberId}`
+        return c.json({ unread: (await visible(auth)).filter((r) => !r.read).length })
+      })
+
+      .post('/', async (c) => {
+        const auth = c.var.auth
+        const body = await parseBody(c, Write)
+        const admin = isAdmin(auth)
+        if (!admin && !isStaff(auth.role)) throw forbidden('Only admins and trainers can post announcements.')
+        if (!admin && body.audience !== 'cohort') throw forbidden('Trainers post to the cohorts they teach.')
+        if (body.audience === 'cohort') {
+          const [cohort] =
+            await deps.sql`select 1 from public.cohorts where id = ${body.cohortId} and organisation_id = ${auth.organisationId} and archived_at is null`
+          const mine = admin || (await taughtCohorts(deps.sql, auth.memberId)).includes(body.cohortId!)
+          if (!cohort || !mine)
+            throw new AppError(400, 'bad_request', 'Some fields need attention.', [{ field: 'cohortId', message: 'Choose one of your cohorts.' }])
+        }
+        const cohortId = body.audience === 'cohort' ? body.cohortId : null
+        const [row] = await deps.sql<{ id: string }[]>`
         insert into public.announcements (organisation_id, author_member_id, audience, cohort_id, title, body, important)
         values (${auth.organisationId}, ${auth.memberId}, ${body.audience}, ${cohortId}, ${body.title}, ${body.body}, ${body.important})
         returning id
       `
-      await audit(deps.sql, {
-        organisationId: auth.organisationId,
-        actorMemberId: auth.memberId,
-        action: 'announcement.posted',
-        entityType: 'announcement',
-        entityId: row!.id,
-        data: { audience: body.audience, cohortId, important: body.important },
-        requestId: c.var.requestId,
-      })
+        await audit(deps.sql, {
+          organisationId: auth.organisationId,
+          actorMemberId: auth.memberId,
+          action: 'announcement.posted',
+          entityType: 'announcement',
+          entityId: row!.id,
+          data: { audience: body.audience, cohortId, important: body.important },
+          requestId: c.var.requestId,
+        })
 
-      // Who it reaches: everyone active in the audience, but not the author.
-      const people = await deps.sql<{ id: string; role: Role }[]>`
+        // Who it reaches: everyone active in the audience, but not the author.
+        const people = await deps.sql<{ id: string; role: Role }[]>`
         select m.id, m.role from public.organisation_members m
         where m.organisation_id = ${auth.organisationId} and m.status = 'active' and m.id <> ${auth.memberId}
           and ${
@@ -223,78 +302,79 @@ export function announcementRoutes(deps: AppDeps) {
                                  where t.member_id = m.id and x.cohort_id = ${cohortId}))`
           }
       `
-      const [me] = await deps.sql<{ name: string; org: string }[]>`
+        const [me] = await deps.sql<{ name: string; org: string }[]>`
         select trim(m.first_name || ' ' || coalesce(m.last_name, '')) as name, o.name as org
         from public.organisation_members m join public.organisations o on o.id = m.organisation_id where m.id = ${auth.memberId}
       `
-      const preview = body.body.length > 140 ? `${body.body.slice(0, 137).trimEnd()}…` : body.body
-      let emailed = 0
-      // Each role has its own page; send once per page so the link is right.
-      for (const role of new Set(people.map((p) => page(p.role)))) {
-        const ids = people.filter((p) => page(p.role) === role).map((p) => p.id)
-        emailed += await deliver(deps, {
+        const preview = body.body.length > 140 ? `${body.body.slice(0, 137).trimEnd()}…` : body.body
+        let emailed = 0
+        // Each role has its own page; send once per page so the link is right.
+        for (const role of new Set(people.map((p) => page(p.role)))) {
+          const ids = people.filter((p) => page(p.role) === role).map((p) => p.id)
+          emailed += await deliver(deps, {
+            organisationId: auth.organisationId,
+            to: { memberIds: ids },
+            event: 'announcement',
+            title: `${me!.name}: ${body.title}`,
+            body: preview,
+            link: `${role}#${row!.id}`,
+            // Email only when the author marks it important (X2: email is for the things that matter most).
+            ...(body.important && {
+              email: {
+                subject: `${body.title} — ${me!.org}`,
+                title: body.title,
+                intro: (first: string) => `Hi ${first}, ${me!.name} posted an announcement:\n\n${body.body}`,
+                buttonLabel: 'Open announcements',
+                footer: 'You get this because it was marked important. Change announcement emails in Settings › Notifications.',
+              },
+            }),
+          })
+        }
+        const [created] = await visible(auth, row!.id)
+        return c.json({ announcement: toJson(created!, auth), reached: people.length, emailed }, 201)
+      })
+
+      .patch('/:id', async (c) => {
+        const auth = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+        const body = await parseBody(c, Edit)
+        const [row] = await visible(auth, id)
+        if (!row) throw notFound('Announcement not found.')
+        if (row.author_id !== auth.memberId && !isAdmin(auth)) throw forbidden('Only the author or an admin can change this announcement.')
+        // Edits don't notify again.
+        await deps.sql`update public.announcements set title = ${body.title}, body = ${body.body}, updated_at = now() where id = ${id}`
+        await audit(deps.sql, {
           organisationId: auth.organisationId,
-          to: { memberIds: ids },
-          event: 'announcement',
-          title: `${me!.name}: ${body.title}`,
-          body: preview,
-          link: `${role}#${row!.id}`,
-          // Email only when the author marks it important (X2: email is for the things that matter most).
-          ...(body.important && {
-            email: {
-              subject: `${body.title} — ${me!.org}`,
-              title: body.title,
-              intro: (first: string) => `Hi ${first}, ${me!.name} posted an announcement:\n\n${body.body}`,
-              buttonLabel: 'Open announcements',
-              footer: 'You get this because it was marked important. Change announcement emails in Settings › Notifications.',
-            },
-          }),
+          actorMemberId: auth.memberId,
+          action: 'announcement.edited',
+          entityType: 'announcement',
+          entityId: id,
+          requestId: c.var.requestId,
         })
-      }
-      const [created] = await visible(auth, row!.id)
-      return c.json({ announcement: toJson(created!, auth), reached: people.length, emailed }, 201)
-    })
-
-    .patch('/:id', async (c) => {
-      const auth = c.var.auth
-      const id = c.req.param('id')
-      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
-      const body = await parseBody(c, Edit)
-      const [row] = await visible(auth, id)
-      if (!row) throw notFound('Announcement not found.')
-      if (row.author_id !== auth.memberId && !isAdmin(auth)) throw forbidden('Only the author or an admin can change this announcement.')
-      // Edits don't notify again.
-      await deps.sql`update public.announcements set title = ${body.title}, body = ${body.body}, updated_at = now() where id = ${id}`
-      await audit(deps.sql, {
-        organisationId: auth.organisationId,
-        actorMemberId: auth.memberId,
-        action: 'announcement.edited',
-        entityType: 'announcement',
-        entityId: id,
-        requestId: c.var.requestId,
+        const [updated] = await visible(auth, id)
+        return c.json({ announcement: toJson(updated!, auth) })
       })
-      const [updated] = await visible(auth, id)
-      return c.json({ announcement: toJson(updated!, auth) })
-    })
 
-    .delete('/:id', async (c) => {
-      const auth = c.var.auth
-      const id = c.req.param('id')
-      if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
-      const [row] = await visible(auth, id)
-      if (!row) throw notFound('Announcement not found.')
-      if (row.author_id !== auth.memberId && !isAdmin(auth)) throw forbidden('Only the author or an admin can delete this announcement.')
-      await deps.sql`update public.announcements set deleted_at = now() where id = ${id}`
-      // Take it out of people's bells too.
-      await deps.sql`delete from public.notifications where organisation_id = ${auth.organisationId} and event = 'announcement' and link_path like ${'%#' + id}`
-      await audit(deps.sql, {
-        organisationId: auth.organisationId,
-        actorMemberId: auth.memberId,
-        action: 'announcement.deleted',
-        entityType: 'announcement',
-        entityId: id,
-        requestId: c.var.requestId,
+      .delete('/:id', async (c) => {
+        const auth = c.var.auth
+        const id = c.req.param('id')
+        if (!uuid.safeParse(id).success) throw notFound('Announcement not found.')
+        const [row] = await visible(auth, id)
+        if (!row) throw notFound('Announcement not found.')
+        if (row.author_id !== auth.memberId && !isAdmin(auth)) throw forbidden('Only the author or an admin can delete this announcement.')
+        await deps.sql`update public.announcements set deleted_at = now() where id = ${id}`
+        // Take it out of people's bells too.
+        await deps.sql`delete from public.notifications where organisation_id = ${auth.organisationId} and event = 'announcement' and link_path like ${'%#' + id}`
+        await audit(deps.sql, {
+          organisationId: auth.organisationId,
+          actorMemberId: auth.memberId,
+          action: 'announcement.deleted',
+          entityType: 'announcement',
+          entityId: id,
+          requestId: c.var.requestId,
+        })
+        return c.body(null, 204)
       })
-      return c.body(null, 204)
-    })
+  )
 }
