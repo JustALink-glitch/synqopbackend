@@ -20,7 +20,33 @@ export interface MeetingInput {
   timeZone: string
   /** Personal join links: Zoom registers each participant (F1.07 "A personal join link for each participant"). */
   registration: boolean
+  /** The Zoom user who hosts it; the connected account when unset. */
+  hostId?: string | null
+  /** Record to the Zoom cloud from the start (paid Zoom plans; ignored by Zoom otherwise). */
+  record?: boolean
 }
+
+export interface ZoomUser {
+  id: string
+  email: string
+  /** 1 basic, 2 licensed: only licensed users can host meetings longer than 40 minutes. */
+  type: number
+}
+
+export interface ZoomRecording {
+  shareUrl: string
+  passcode: string | null
+  minutes: number
+}
+
+/** Scopes added in Nov 2026; connections approved before then lack them until someone presses Connect again. */
+export const SCOPES = {
+  users: 'user:read:list_users:admin',
+  readMeeting: 'meeting:read:meeting:admin',
+  recordings: 'cloud_recording:read:list_recording_files:admin',
+} as const
+/** Admin-managed apps get the `:admin` form; user-managed apps the plain one. */
+export const hasScope = (scopes: string[], scope: string) => scopes.includes(scope) || scopes.includes(scope.replace(/:admin$/, ''))
 
 export interface ZoomParticipant {
   name: string
@@ -56,6 +82,12 @@ export interface ZoomApi {
   addRegistrant(accessToken: string, meetingId: string, person: { email: string; firstName: string; lastName: string }): Promise<{ registrantId: string; joinUrl: string }>
   /** Everyone who joined, one row per join. Null while Zoom is still preparing the report. */
   participants(accessToken: string, meetingId: string): Promise<ZoomParticipant[] | null>
+  /** Active users in the Zoom account. */
+  users(accessToken: string): Promise<ZoomUser[]>
+  /** A link that starts the meeting as its host, without signing in to Zoom. Zoom expires it within hours. */
+  startUrl(accessToken: string, meetingId: string): Promise<string>
+  /** The cloud recording once Zoom has processed it; null when there is none (yet). */
+  recording(accessToken: string, meetingId: string): Promise<ZoomRecording | null>
 }
 
 /** Talks to zoom.us. */
@@ -111,6 +143,7 @@ export function createZoomApi(options: { clientId: string; clientSecret: string;
       waiting_room: false,
       registrants_email_notification: false,
       registrants_confirmation_email: false,
+      ...(input.record !== undefined && { auto_recording: input.record ? 'cloud' : 'none' }),
     },
   })
 
@@ -131,7 +164,8 @@ export function createZoomApi(options: { clientId: string; clientSecret: string;
       return { email: user.email, accountId: user.account_id }
     },
     async createMeeting(t, input) {
-      const m = await api<{ id: number | string; join_url: string }>(t, 'POST', '/users/me/meetings', meetingBody(input))
+      const host = input.hostId ? encodeURIComponent(input.hostId) : 'me'
+      const m = await api<{ id: number | string; join_url: string }>(t, 'POST', `/users/${host}/meetings`, meetingBody(input))
       return { id: String(m.id), joinUrl: m.join_url }
     },
     async updateMeeting(t, id, input) {
@@ -172,6 +206,43 @@ export function createZoomApi(options: { clientId: string; clientSecret: string;
         next = page.next_page_token ?? ''
       } while (next)
       return out
+    },
+    async users(t) {
+      const out: ZoomUser[] = []
+      let next = ''
+      do {
+        const page = await api<{ users?: { id: string; email: string; type: number }[]; next_page_token?: string }>(
+          t,
+          'GET',
+          `/users?status=active&page_size=300${next ? `&next_page_token=${encodeURIComponent(next)}` : ''}`,
+        )
+        for (const u of page.users ?? []) out.push({ id: u.id, email: u.email.toLowerCase(), type: Number(u.type) })
+        next = page.next_page_token ?? ''
+      } while (next)
+      return out
+    },
+    async startUrl(t, id) {
+      const m = await api<{ start_url: string }>(t, 'GET', `/meetings/${encodeURIComponent(id)}`)
+      return m.start_url
+    },
+    async recording(t, id) {
+      let r: { share_url?: string; password?: string; recording_play_passcode?: string; recording_files?: { recording_start?: string; recording_end?: string; status?: string; file_type?: string }[] }
+      try {
+        r = await api(t, 'GET', `/meetings/${encodeURIComponent(id)}/recordings`)
+      } catch (error) {
+        // 3301: no recording for this meeting (yet).
+        if (error instanceof ZoomError && (error.status === 404 || error.code === '3301')) return null
+        throw error
+      }
+      const files = (r.recording_files ?? []).filter((f) => f.file_type === 'MP4')
+      if (!r.share_url || !files.length || files.some((f) => f.status && f.status !== 'completed')) return null
+      const minutes = files.reduce((max, f) => {
+        const m = f.recording_start && f.recording_end ? (new Date(f.recording_end).getTime() - new Date(f.recording_start).getTime()) / 60_000 : 0
+        return Math.max(max, m)
+      }, 0)
+      // The share link may carry the passcode already (?pwd=); otherwise viewers need it.
+      const passcode = /[?&]pwd=/.test(r.share_url) ? null : (r.password ?? r.recording_play_passcode ?? null) || null
+      return { shareUrl: r.share_url, passcode, minutes: Math.round(minutes) }
     },
   }
 }

@@ -49,7 +49,17 @@ describe.skipIf(!TEST_DATABASE_URL)('sessions (C1)', () => {
       const notInCohort = await post('/v1/sessions', { ...base(), courseId: otherCourseId, date: day(1) })
       expect(notInCohort.body.error!.details).toEqual([expect.objectContaining({ field: 'courseId' })])
       const backwards = await post('/v1/sessions', { ...base(), date: day(1), start: '12:00', end: '10:00' })
-      expect(backwards.body.error!.details).toEqual([expect.objectContaining({ field: 'end' })])
+      expect(backwards.body.error!.details).toEqual([expect.objectContaining({ field: 'durationMinutes' })])
+      // A duration lets a class run past midnight (pilot feedback, Nov 2026).
+      const late = await post('/v1/sessions', { ...base(), date: day(1), start: '22:00', end: undefined, durationMinutes: 150 })
+      expect(late.status).toBe(201)
+      const [row] = await sql<{ minutes: number; next_day: boolean }[]>`
+        select extract(epoch from ends_at - starts_at)::int / 60 as minutes,
+               (ends_at at time zone 'Africa/Lagos')::date > (starts_at at time zone 'Africa/Lagos')::date as next_day
+        from sessions where id = ${(late.body as { firstSessionId: string }).firstSessionId}
+      `
+      expect(row).toEqual({ minutes: 150, next_day: true })
+      await sql`delete from sessions where id = ${(late.body as { firstSessionId: string }).firstSessionId}`
       const noPlace = await post('/v1/sessions', { ...base(), date: day(1), mode: 'in_person' })
       expect(noPlace.body.error!.details).toEqual([expect.objectContaining({ field: 'location' })])
       const badLink = await post('/v1/sessions', { ...base(), date: day(1), joinUrl: 'zoom.us/j/1' })
@@ -156,6 +166,21 @@ describe.skipIf(!TEST_DATABASE_URL)('sessions (C1)', () => {
       // The remaining sessions renumber from 1.
       const list = await req('GET', `/v1/sessions?from=${day(0)}&to=${day(14)}`, { token })
       expect((list.body.sessions as { number: number | null }[]).filter((s) => s.number).map((s) => s.number)).toEqual([1, 2, 3])
+    })
+
+    it('cancels several at once, with one email per person listing them (pilot feedback, Nov 2026)', async () => {
+      const made = await post('/v1/sessions', { ...base(), date: day(20), repeat: { weekdays: [((new Date(`${day(20)}T12:00:00Z`).getUTCDay() + 6) % 7) + 1], count: 3 } })
+      const series = await sql<{ id: string }[]>`select id from sessions where series_id = (select series_id from sessions where id = ${(made.body as { firstSessionId: string }).firstSessionId}) order by starts_at`
+      expect(series).toHaveLength(3)
+      expect((await post('/v1/sessions/cancel', { ids: series.map((r) => r.id), reason: '' })).status).toBe(400)
+      const before = t.mail.sent.length
+      const res = await post('/v1/sessions/cancel', { ids: [...series.map((r) => r.id), ids[0]], reason: 'Venue closed' })
+      expect(res.body).toMatchObject({ cancelled: 3, emailed: 2, skipped: [{ id: ids[0], reason: 'Already cancelled.' }] })
+      const mails = t.mail.sent.slice(before)
+      expect(mails).toHaveLength(2)
+      expect(mails[0]!.subject).toBe('3 sessions cancelled')
+      expect(mails[0]!.text).toContain('Venue closed')
+      expect(await sql`select 1 from sessions where id in ${sql(series.map((r) => r.id))} and cancelled_at is null`).toHaveLength(0)
     })
 
     it('never changes held sessions, and asks for their attendance', async () => {

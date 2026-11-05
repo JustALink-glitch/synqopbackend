@@ -1,3 +1,4 @@
+import { clockRange } from '../lib/when.js'
 import { Hono } from 'hono'
 import { EVENTS, notify as inApp } from '../lib/notifications.js'
 import { z } from 'zod'
@@ -10,6 +11,7 @@ import { can, staffScope, teachingIds, type StaffScope } from '../lib/staff.js'
 import { MAX_SESSIONS_PER_SCHEDULE, occurrences, toRrule, weekdaysFromRrule, type Weekday } from '../lib/schedule.js'
 import { isoDate, optionalText, parseBody, uuid } from '../lib/validation.js'
 import { requireAuth, requireRole, type AuthVariables } from '../middleware/auth.js'
+import { hasScope, SCOPES, withZoom } from '../lib/zoom.js'
 import { attendanceRoutes } from './attendance.js'
 import { sessionResourceRoutes, sessionResources, toResource } from './session-resources.js'
 
@@ -29,6 +31,18 @@ const Where = {
   joinUrl,
 }
 
+/** How long a session runs (pilot feedback, Nov 2026): a duration, so classes can run past midnight. `end` stays for older clients. */
+const Length = {
+  durationMinutes: z.number().int().min(5, 'At least 5 minutes.').max(12 * 60, 'At most 12 hours.').optional(),
+  end: time.optional(),
+}
+const minutesOf = (v: { start: string; end?: string; durationMinutes?: number }) => {
+  if (v.durationMinutes) return v.durationMinutes
+  const [sh, sm] = v.start.split(':').map(Number)
+  const [eh, em] = v.end!.split(':').map(Number)
+  return eh! * 60 + em! - (sh! * 60 + sm!)
+}
+
 const Schedule = z
   .object({
     cohortId: uuid,
@@ -36,7 +50,7 @@ const Schedule = z
     trainerMemberId: uuid.nullish().transform((value) => value ?? null),
     date: isoDate,
     start: time,
-    end: time,
+    ...Length,
     repeat: z
       .object({
         weekdays: z.array(z.number().int().min(1).max(7)).min(1, 'Choose at least one day.'),
@@ -48,7 +62,7 @@ const Schedule = z
       .transform((value) => value ?? null),
     ...Where,
   })
-  .refine((v) => v.end > v.start, { path: ['end'], message: 'End must be after the start.' })
+  .refine((v) => v.durationMinutes || (v.end && v.end > v.start), { path: ['durationMinutes'], message: 'Choose how long it runs.' })
   .refine((v) => v.mode === 'online' || Boolean(v.location), { path: ['location'], message: 'Enter where it happens.' })
 
 const Edit = z
@@ -56,13 +70,33 @@ const Edit = z
     scope: z.enum(['this', 'following', 'all']).default('this'),
     date: isoDate,
     start: time,
-    end: time,
+    ...Length,
     trainerMemberId: uuid.nullish().transform((value) => value ?? null),
     notify: z.boolean().default(false),
     ...Where,
   })
-  .refine((v) => v.end > v.start, { path: ['end'], message: 'End must be after the start.' })
+  .refine((v) => v.durationMinutes || (v.end && v.end > v.start), { path: ['durationMinutes'], message: 'Choose how long it runs.' })
   .refine((v) => v.mode === 'online' || Boolean(v.location), { path: ['location'], message: 'Enter where it happens.' })
+
+const ClashCheck = z.object({
+  date: isoDate,
+  start: time,
+  durationMinutes: z.number().int().min(5).max(12 * 60),
+  repeat: z
+    .object({ weekdays: z.array(z.number().int().min(1).max(7)).min(1), count: z.number().int().min(1).max(MAX_SESSIONS_PER_SCHEDULE).optional(), until: isoDate.optional() })
+    .nullish(),
+  trainerMemberId: uuid.nullish(),
+  mode: z.enum(['online', 'in_person']),
+  joinUrl: z.string().nullish(),
+  /** The session being edited, and its series when the change applies to following or all. */
+  excludeId: uuid.nullish(),
+})
+
+const CancelMany = z.object({
+  ids: z.array(uuid).min(1, 'Choose at least one session.').max(100),
+  reason: z.string().trim().min(1, 'Add a reason. Participants see it in the email.').max(300),
+  notify: z.boolean().default(true),
+})
 
 const Cancel = z.object({
   reason: z.string().trim().min(1, 'Add a reason. Participants see it in the email.').max(300),
@@ -88,6 +122,9 @@ interface SessionRow {
   zoom_sync_error: string | null
   zoom_import_error: string | null
   attendance_imported_at: Date | null
+  recording_url: string | null
+  recording_passcode: string | null
+  recording_minutes: number | null
   zoom_unmatched: number
   zoom_connected: boolean
   cancelled_at: Date | null
@@ -127,6 +164,7 @@ function selectSessions(sql: Sql | Tx, organisationId: string, filter: { id?: st
            (select count(*)::int from public.sessions x where x.series_id = s.series_id) as series_count,
            s.starts_at, s.ends_at, public.status(s) as status, s.mode, s.location, s.zoom_join_url, s.zoom_meeting_id,
            s.zoom_managed, s.zoom_sync_error, s.zoom_import_error, s.attendance_imported_at,
+           s.recording_url, s.recording_passcode, s.recording_minutes,
            (select count(*)::int from public.zoom_unmatched_attendees u where u.session_id = s.id and u.resolved_at is null and not u.dismissed) as zoom_unmatched,
            exists (select 1 from public.zoom_connections z where z.organisation_id = s.organisation_id and z.broken_at is null) as zoom_connected,
            s.cancelled_at, s.cancellation_reason, cb.first_name as cancelled_by_first_name, cb.last_name as cancelled_by_last_name,
@@ -184,6 +222,8 @@ const toSession = (row: SessionRow) => ({
     importedAt: row.attendance_imported_at,
     unmatched: row.zoom_unmatched,
   },
+  // Zoom's cloud recording, linked once processed (pilot feedback, Nov 2026).
+  recording: row.recording_url ? { url: row.recording_url, passcode: row.recording_passcode, minutes: row.recording_minutes } : null,
   trainer: row.trainer_member_id
     ? { id: row.trainer_member_id, name: `${row.trainer_first_name} ${row.trainer_last_name}`, isLead: Boolean(row.trainer_is_lead) }
     : null,
@@ -309,8 +349,7 @@ export function sessionRoutes(deps: AppDeps) {
 
   const describeWhen = (row: Pick<SessionRow, 'starts_at' | 'ends_at'>, tz: string) => {
     const day = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: tz }).format(row.starts_at)
-    const t = (d: Date) => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }).format(d)
-    return `${day.replace(',', '')}, ${t(row.starts_at)}–${t(row.ends_at)}`
+    return `${day.replace(',', '')}, ${clockRange(row.starts_at, row.ends_at, tz)}`
   }
 
   return (
@@ -388,6 +427,69 @@ export function sessionRoutes(deps: AppDeps) {
         return c.json({ timeZone: tz, hasAny: any!.exists, sessions: rows.map(toSession), attendanceToConfirm: confirmRows.map(toSession) })
       })
 
+      // Before saving (pilot feedback, Nov 2026): the trainer is already teaching then, or every Zoom host is in use.
+      .post('/clashes', async (c) => {
+        const body = await parseBody(c, ClashCheck)
+        const { organisationId } = c.var.auth
+        const { time_zone: tz } = await timeZoneOf(deps.sql, organisationId)
+        const dates = occurrences(body.date, body.repeat ? { weekdays: body.repeat.weekdays as Weekday[], count: body.repeat.count, until: body.repeat.until } : null).slice(
+          0,
+          MAX_SESSIONS_PER_SCHEDULE,
+        )
+        if (!dates.length) return c.json({ trainer: [], zoom: [] })
+        const rows = await deps.sql<
+          { id: string; course: string; cohort: string; starts_at: Date; ends_at: Date; same_trainer: boolean; on_zoom: boolean; slot: Date; slot_end: Date }[]
+        >`
+          with r as (
+            select (d + ${body.start}::time) at time zone ${tz} as a,
+                   (d + ${body.start}::time) at time zone ${tz} + make_interval(mins => ${body.durationMinutes}) as b
+            from unnest(${dates}::date[]) d
+          )
+          select s.id, co.name as course, h.name as cohort, s.starts_at, s.ends_at, r.a as slot, r.b as slot_end,
+                 coalesce(coalesce(s.trainer_member_id, (select ct.member_id from public.cohort_course_trainers ct where ct.cohort_course_id = s.cohort_course_id and ct.is_lead limit 1))
+                          = ${body.trainerMemberId ?? null}::uuid, false) as same_trainer,
+                 (s.mode = 'online' and (s.zoom_managed or s.zoom_join_url is null)) as on_zoom
+          from public.sessions s
+          join r on s.starts_at < r.b and s.ends_at > r.a
+          join public.cohort_courses x on x.id = s.cohort_course_id
+          join public.courses co on co.id = x.course_id
+          join public.cohorts h on h.id = x.cohort_id
+          where s.organisation_id = ${organisationId} and s.cancelled_at is null
+            ${body.excludeId ? deps.sql`and s.id <> ${body.excludeId}` : deps.sql``}
+          order by s.starts_at
+        `
+        const describe = (r: (typeof rows)[number]) => ({ id: r.id, title: r.course, cohort: r.cohort, startsAt: r.starts_at, endsAt: r.ends_at })
+        const trainer = body.trainerMemberId ? rows.filter((r) => r.same_trainer).map(describe) : []
+        // Zoom: only when Synqop will make this meeting, and only once every host is in use at that time.
+        let zoom: { slot: Date; hosts: number; sessions: ReturnType<typeof describe>[] }[] = []
+        const [conn] = await deps.sql<{ users: { type: number }[] }[]>`
+          select users from public.zoom_connections where organisation_id = ${organisationId} and broken_at is null
+        `
+        if (conn && body.mode === 'online' && !body.joinUrl?.trim()) {
+          const hosts = Math.max(1, (conn.users ?? []).filter((u) => u.type === 2).length)
+          const bySlot = new Map<string, (typeof rows)[number][]>()
+          for (const r of rows.filter((x) => x.on_zoom)) bySlot.set(r.slot.toISOString(), [...(bySlot.get(r.slot.toISOString()) ?? []), r])
+          zoom = [...bySlot.values()].filter((list) => list.length >= hosts).map((list) => ({ slot: list[0]!.slot, hosts, sessions: list.map(describe) }))
+        }
+        return c.json({ trainer, zoom })
+      })
+
+      // Start the class as its Zoom host, without signing in to Zoom (pilot feedback, Nov 2026). Staff on the session only.
+      .post('/:id/zoom/start', async (c) => {
+        const scope = await staffScope(deps.sql, c.var.auth)
+        const row = await findSession(deps.sql, c.var.auth.organisationId, c.req.param('id'), scope)
+        if (!row.zoom_managed || !row.zoom_meeting_id || row.cancelled_at) throw new AppError(409, 'not_a_zoom_meeting', 'This session has no Synqop Zoom meeting.')
+        if (!deps.zoom || !deps.zoomBox) throw new AppError(409, 'zoom_not_configured', 'Zoom isn’t set up on this server.')
+        const [conn] = await deps.sql<{ scopes: string[] | null }[]>`select scopes from public.zoom_connections where organisation_id = ${c.var.auth.organisationId}`
+        if (!hasScope(conn?.scopes ?? [], SCOPES.readMeeting)) {
+          throw new AppError(409, 'zoom_reconnect', 'An admin needs to connect Zoom again (Settings › Attendance & Zoom) so classes can be started from Synqop.')
+        }
+        const meetingId = row.zoom_meeting_id
+        const url = await withZoom({ sql: deps.sql, zoom: deps.zoom, box: deps.zoomBox }, c.var.auth.organisationId, (token) => deps.zoom!.startUrl(token, meetingId))
+        if (!url) throw new AppError(409, 'zoom_reconnect', 'Zoom needs connecting again. An admin can do it in Settings › Attendance & Zoom.')
+        return c.json({ url })
+      })
+
       .get('/:id', async (c) => {
         const scope = await staffScope(deps.sql, c.var.auth)
         const row = await findSession(deps.sql, c.var.auth.organisationId, c.req.param('id'), scope)
@@ -445,7 +547,7 @@ export function sessionRoutes(deps: AppDeps) {
               values
                 (${organisationId}, ${cohortCourse.id}, ${seriesId}, ${cohortCourse.course_name},
                  (${date}::date + ${body.start}::time) at time zone ${tz},
-                 (${date}::date + ${body.end}::time) at time zone ${tz},
+                 (${date}::date + ${body.start}::time) at time zone ${tz} + make_interval(mins => ${minutesOf(body)}),
                  ${body.mode}, ${body.location}, ${body.mode === 'online' ? body.joinUrl : null}, ${body.trainerMemberId}, ${actorId})
               returning id
             `
@@ -514,7 +616,8 @@ export function sessionRoutes(deps: AppDeps) {
             await tx`
               update public.sessions s
               set starts_at = (${id === session.id ? body.date : tx`(s.starts_at at time zone ${tz})::date`}::date + ${body.start}::time) at time zone ${tz},
-                  ends_at = (${id === session.id ? body.date : tx`(s.starts_at at time zone ${tz})::date`}::date + ${body.end}::time) at time zone ${tz},
+                  ends_at = (${id === session.id ? body.date : tx`(s.starts_at at time zone ${tz})::date`}::date + ${body.start}::time) at time zone ${tz}
+                            + make_interval(mins => ${minutesOf(body)}),
                   mode = ${body.mode}, location = ${body.location},
                   -- A meeting Synqop made stays unless the session moves in person or someone pastes another link (C1.06).
                   zoom_join_url = case when ${body.mode} <> 'online' then null
@@ -563,6 +666,84 @@ export function sessionRoutes(deps: AppDeps) {
         }
         deps.zoomSoon?.(organisationId)
         return c.json({ updated, emailed })
+      })
+
+      // C1.05 for several sessions at once (pilot feedback, Nov 2026). One email per person, listing every session.
+      .post('/cancel', async (c) => {
+        const body = await parseBody(c, CancelMany)
+        const { organisationId, memberId: actorId } = c.var.auth
+        const ids = [...new Set(body.ids)]
+        const ok: SessionRow[] = []
+        const skipped: { id: string; reason: string }[] = []
+        for (const id of ids) {
+          try {
+            const row = await findForScheduling(c, id)
+            if (row.cancelled_at) skipped.push({ id, reason: 'Already cancelled.' })
+            else if (row.status !== 'scheduled') skipped.push({ id, reason: 'It has started or been held.' })
+            else ok.push(row)
+          } catch (error) {
+            skipped.push({ id, reason: error instanceof AppError ? error.message : 'Not found.' })
+          }
+        }
+        if (!ok.length) return c.json({ cancelled: 0, skipped, emailed: 0 })
+        await deps.sql.begin(async (tx) => {
+          await tx`
+            update public.sessions set cancelled_at = now(), cancellation_reason = ${body.reason}, cancelled_by = ${actorId}, zoom_sync_needed = zoom_managed, updated_at = now()
+            where id in ${tx(ok.map((r) => r.id))} and cancelled_at is null
+          `
+          for (const r of ok) {
+            await audit(tx, { organisationId, actorMemberId: actorId, action: 'session.cancelled', entityType: 'session', entityId: r.id, data: { reason: body.reason, bulk: true }, requestId: c.var.requestId })
+          }
+        })
+        const { time_zone: tz, name: organisationName } = await timeZoneOf(deps.sql, organisationId)
+        const sorted = [...ok].sort((a, b) => a.starts_at.getTime() - b.starts_at.getTime())
+        const line = (r: SessionRow) => `${r.course_name} · ${r.cohort_name} · ${describeWhen(r, tz)}`
+        const subject = ok.length === 1 ? `Cancelled: ${ok[0]!.course_name}, ${describeWhen(ok[0]!, tz)}` : `${ok.length} sessions cancelled`
+        await tellAdmins(c.var.auth, subject, ok.length === 1 ? `${ok[0]!.cohort_name} · ${body.reason}` : body.reason, ok.length === 1 ? ok[0]!.id : null)
+        let emailed = 0
+        if (body.notify) {
+          // Who's affected: everyone active in each session's cohort, and its trainer; each person once.
+          const cohortIds = [...new Set(ok.map((r) => r.cohort_id))]
+          const people = await deps.sql<{ id: string; email: string; first_name: string; role: Role; by_email: boolean | null; cohort_ids: string[] }[]>`
+            select m.id, m.email, m.first_name, m.role, p.email as by_email,
+                   coalesce((select array_agg(e.cohort_id) from public.enrolments e where e.member_id = m.id and e.status = 'active' and e.cohort_id in ${deps.sql(cohortIds)}), '{}') as cohort_ids
+            from public.organisation_members m
+            left join public.notification_preferences p on p.member_id = m.id and p.event = 'session_changed'
+            where m.organisation_id = ${organisationId} and m.status <> 'deactivated' and m.id <> ${actorId}
+              and (m.id in ${deps.sql(ok.map((r) => r.trainer_member_id ?? actorId))}
+                   or exists (select 1 from public.enrolments e where e.member_id = m.id and e.status = 'active' and e.cohort_id in ${deps.sql(cohortIds)}))
+          `
+          for (const person of people) {
+            const theirs = sorted.filter((r) => person.cohort_ids.includes(r.cohort_id) || r.trainer_member_id === person.id)
+            if (!theirs.length) continue
+            const title = theirs.length === 1 ? `Cancelled: ${theirs[0]!.course_name}, ${describeWhen(theirs[0]!, tz)}` : `${theirs.length} sessions cancelled`
+            const trainer = person.role !== 'participant'
+            await inApp(deps.sql, {
+              organisationId,
+              to: { memberIds: [person.id] },
+              event: 'session_changed',
+              title,
+              link: theirs.length === 1 ? `/${trainer ? 'trainer' : 'participant'}/sessions/${theirs[0]!.id}` : `/${trainer ? 'trainer' : 'participant'}/sessions`,
+            })
+            if (!(person.by_email ?? EVENTS[person.role]?.find((e) => e.key === 'session_changed')?.email ?? true)) continue
+            const { text, html } = renderEmail({
+              title,
+              intro: `Hi ${person.first_name}, ${theirs.length === 1 ? 'this session is' : 'these sessions are'} cancelled. Reason: ${body.reason}`,
+              details: theirs.map((r, i) => ({ label: theirs.length === 1 ? 'Session' : `${i + 1}`, value: line(r) })),
+              buttonLabel: 'Open Synqop',
+              buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
+              note: `Sent by ${organisationName} through Synqop.`,
+            })
+            try {
+              await deps.mailer.send({ to: person.email, subject: title, text, html })
+              emailed++
+            } catch (error) {
+              console.error('Session email failed', error)
+            }
+          }
+        }
+        deps.zoomSoon?.(organisationId)
+        return c.json({ cancelled: ok.length, skipped, emailed })
       })
 
       // C1.05 Cancel session.

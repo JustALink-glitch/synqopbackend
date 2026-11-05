@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Sql } from '../src/lib/db.js'
 import { addDays } from '../src/lib/schedule.js'
 import { syncZoom, syncZoomQueued, zoomSoon, type ZoomSyncDeps } from '../src/lib/zoom-sync.js'
-import { tokenBox, ZoomError, type MeetingInput, type ZoomApi, type ZoomParticipant } from '../src/lib/zoom.js'
+import { tokenBox, ZoomError, type MeetingInput, type ZoomApi, type ZoomParticipant, type ZoomRecording, type ZoomUser } from '../src/lib/zoom.js'
 import { createTestDatabase, TEST_DATABASE_URL } from './helpers/db.js'
 import { as, client, testApp } from './helpers/app.js'
 
@@ -14,6 +14,8 @@ function fakeZoom() {
   const calls: string[] = []
   const meetings = new Map<string, MeetingInput>()
   const reports = new Map<string, ZoomParticipant[] | null>()
+  const recordings = new Map<string, ZoomRecording>()
+  const users: ZoomUser[] = []
   let n = 0
   let refreshes = 0
   let failWith: ZoomError | null = null
@@ -54,6 +56,19 @@ function fakeZoom() {
       meetings.delete(id)
       calls.push(`delete ${id}`)
     },
+    async users() {
+      check()
+      calls.push('users')
+      return users
+    },
+    async startUrl(_t, id) {
+      check()
+      return `https://zoom.us/s/${id}?zak=host-token`
+    },
+    async recording(_t, id) {
+      check()
+      return recordings.get(id) ?? null
+    },
     async addRegistrant(_t, id, person) {
       check()
       calls.push(`register ${id} ${person.email}`)
@@ -69,6 +84,8 @@ function fakeZoom() {
     calls,
     meetings,
     reports,
+    recordings,
+    users,
     get refreshes() {
       return refreshes
     },
@@ -289,6 +306,51 @@ describe.skipIf(!TEST_DATABASE_URL)('Zoom (F1.07, C1.02, C2.01, C2.04)', () => {
     const register = (await get(`/v1/sessions/${ids.held}/attendance`)).body as { zoom: { unmatched: number }; register: { name: string; status: string; minutesInMeeting: number | null }[] }
     expect(register.zoom.unmatched).toBe(0)
     expect(register.register.find((r) => r.name === 'Tobi Adewale')).toMatchObject({ status: 'present', minutesInMeeting: 112 })
+  })
+
+  it('hosts classes at the same time on different Zoom users, starts them, links recordings and warns about clashes (pilot feedback, Nov 2026)', async () => {
+    await sql`update zoom_connections set scopes = scopes || ${['user:read:list_users:admin', 'meeting:read:meeting:admin', 'cloud_recording:read:list_recording_files:admin']}::text[], users_checked_at = null`
+    zoom.users.push({ id: 'u-main', email: 'zoom@aliwa.org', type: 2 }, { id: 'u-ngozi', email: 'ngozi@aliwa.org', type: 2 }, { id: 'u-room', email: 'room1@aliwa.org', type: 2 })
+    // Three classes at 14:00 on the same day: Ngozi's own Zoom user, then the connected account, then the room.
+    const at14 = async () => ((await post('/v1/sessions', { cohortId: ids.cohort, courseId: ids.course, date: day(9), start: '14:00', durationMinutes: 60, mode: 'online' })).body as { firstSessionId: string }).firstSessionId
+    const a = await at14()
+    const b = await at14()
+    await sql`update sessions set trainer_member_id = null where id = ${b}`
+    const c = await at14()
+    await sql`update sessions set trainer_member_id = null where id = ${c}`
+    await sync()
+    expect(zoom.calls).toContain('users')
+    const hosts = await sql<{ id: string; zoom_host_id: string | null }[]>`select id, zoom_host_id from sessions where id in ${sql([a, b, c])}`
+    const hostOf = (id: string) => hosts.find((h) => h.id === id)!.zoom_host_id
+    expect(hostOf(a)).toBe('u-ngozi')
+    expect(new Set([hostOf(b), hostOf(c)])).toEqual(new Set([null, 'u-room']))
+    const created = [...zoom.meetings.values()].at(-1)!
+    expect(created.record).toBe(true)
+
+    // A fourth at the same time: every host is busy, so the form warns.
+    const clash = await post('/v1/sessions/clashes', { date: day(9), start: '14:30', durationMinutes: 60, mode: 'online', trainerMemberId: ids.trainer })
+    expect(clash.body.zoom).toEqual([expect.objectContaining({ hosts: 3, sessions: expect.any(Array) })])
+    expect((clash.body.trainer as unknown[]).length).toBe(3)
+    const fine = await post('/v1/sessions/clashes', { date: day(9), start: '16:00', durationMinutes: 60, mode: 'online', trainerMemberId: ids.trainer })
+    expect(fine.body).toEqual({ trainer: [], zoom: [] })
+    // A pasted link never needs a Zoom host.
+    expect((await post('/v1/sessions/clashes', { date: day(9), start: '14:30', durationMinutes: 60, mode: 'online', joinUrl: 'https://meet.example/x' })).body.zoom).toEqual([])
+
+    // Start class: a fresh host link for staff, never for participants.
+    expect((await post(`/v1/sessions/${a}/zoom/start`, {})).body).toEqual({ url: expect.stringContaining('zak=') })
+    expect((await req('POST', `/v1/sessions/${a}/zoom/start`, { token: chidiToken, body: {} })).status).toBe(403)
+
+    // After class, Zoom's recording is linked for the cohort.
+    const [meeting] = await sql<{ zoom_meeting_id: string }[]>`select zoom_meeting_id from sessions where id = ${a}`
+    await sql`update sessions set starts_at = now() - interval '2 hours', ends_at = now() - interval '1 hour' where id = ${a}`
+    zoom.reports.set(meeting!.zoom_meeting_id, [])
+    expect((await sync()).recorded).toBe(0)
+    zoom.recordings.set(meeting!.zoom_meeting_id, { shareUrl: 'https://zoom.us/rec/share/abc', passcode: 'x1y2', minutes: 58 })
+    await sql`update sessions set recording_checked_at = null where id = ${a}`
+    expect((await sync()).recorded).toBe(1)
+    const mine = (await get(`/v1/my/sessions/${a}`, chidiToken)).body.session as { recording: unknown }
+    expect(mine.recording).toEqual({ url: 'https://zoom.us/rec/share/abc', passcode: 'x1y2', minutes: 58 })
+    expect(((await get(`/v1/sessions/${a}`)).body.session as { recording: unknown }).recording).toMatchObject({ minutes: 58 })
   })
 
   it('disconnects', async () => {

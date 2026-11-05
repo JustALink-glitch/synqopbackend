@@ -157,4 +157,16 @@ describe.skipIf(!TEST_DATABASE_URL)('needs attention (D1, T7)', () => {
     expect((await get(`/v1/trainer/participants/${people.kemi}`, trainerToken)).status).toBe(404)
     expect((await get('/v1/trainer/participants')).status).toBe(403)
   })
+
+  it('resolves several participants at once with one note (pilot feedback, Nov 2026)', async () => {
+    const flagged = (await list()).map((r) => r.participant.id)
+    expect(flagged.length).toBeGreaterThan(1)
+    expect((await post('/v1/attention/participants/resolve', { memberIds: flagged, note: 'Checked in on all' }, trainerToken)).status).toBe(403)
+    expect((await post('/v1/attention/participants/resolve', { memberIds: [], note: 'x' })).status).toBe(400)
+    const res = await post('/v1/attention/participants/resolve', { memberIds: flagged, note: 'Checked in on all' })
+    expect(res.body).toMatchObject({ participants: flagged.length })
+    expect(await list()).toEqual([])
+    const notes = await sql<{ resolution_note: string }[]>`select distinct resolution_note from attention_flags where resolved_at > now() - interval '1 minute'`
+    expect(notes.map((n) => n.resolution_note)).toContain('Checked in on all')
+  })
 })

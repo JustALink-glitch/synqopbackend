@@ -1,3 +1,4 @@
+import { clockRange } from './when.js'
 import type { AuthAdmin } from './auth-admin.js'
 import { refreshFlags, ruleSettings } from './attention.js'
 import type { Sql } from './db.js'
@@ -47,7 +48,7 @@ interface Org {
 const fmt = (tz: string) => {
   const day = (d: Date) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: tz }).format(d).replace(',', '')
   const time = (d: Date) => new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz }).format(d)
-  return { day, time, range: (a: Date, b: Date) => `${day(a)}, ${time(a)}–${time(b)}`, at: (d: Date) => `${day(d)}, ${time(d)}` }
+  return { day, time, range: (a: Date, b: Date) => `${day(a)}, ${clockRange(a, b, tz)}`, at: (d: Date) => `${day(d)}, ${time(d)}` }
 }
 
 /** Claims a message; false if it already went out. */
@@ -74,7 +75,7 @@ export async function runScheduledJobs(deps: SchedulerDeps, now = new Date()): P
     try {
       if (org.zoom && deps.zoom && deps.zoomBox) {
         const z = await syncZoomQueued({ ...deps, zoom: deps.zoom, box: deps.zoomBox }, org.id, now)
-        counts.zoom += z.created + z.updated + z.deleted + z.registered + z.imported
+        counts.zoom += z.created + z.updated + z.deleted + z.registered + z.imported + z.recorded
       }
       counts.sessionReminders += await sessionReminders(deps, org, now)
       counts.assignmentReminders += await assignmentReminders(deps, org, now)

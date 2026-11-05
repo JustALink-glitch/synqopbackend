@@ -1,3 +1,4 @@
+import { hasScope, SCOPES } from '../lib/zoom.js'
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { z } from 'zod'
@@ -255,8 +256,9 @@ export function settingsRoutes(deps: AppDeps) {
                recordings_shared as rec_on, recording_retention_days as rec_days, in_person_reminder_enabled as remind_on, in_person_reminder_hours as remind
         from public.organisation_settings where organisation_id = ${organisationId}
       `,
-      deps.sql<{ email: string | null; connected_at: Date; broken_reason: string | null; last_import: Date | null }[]>`
-        select z.zoom_user_email as email, z.connected_at, z.broken_reason,
+      deps.sql<{ email: string | null; connected_at: Date; broken_reason: string | null; last_import: Date | null; scopes: string[] | null; hosts: number }[]>`
+        select z.zoom_user_email as email, z.connected_at, z.broken_reason, z.scopes,
+               (select count(*)::int from jsonb_array_elements(z.users) u where (u->>'type')::int = 2) as hosts,
                (select max(attendance_imported_at) from public.sessions where organisation_id = z.organisation_id and zoom_meeting_id is not null) as last_import
         from public.zoom_connections z where z.organisation_id = ${organisationId}
       `,
@@ -270,6 +272,20 @@ export function settingsRoutes(deps: AppDeps) {
         connectedAt: zoom?.connected_at ?? null,
         problem: zoom?.broken_reason ?? null,
         lastImportAt: zoom?.last_import ?? null,
+        // Licensed Zoom users Synqop can host classes on at the same time (pilot feedback, Nov 2026).
+        hosts: zoom?.hosts ?? 0,
+        // Permissions added in Nov 2026 that this connection was approved without: connect again to turn them on.
+        missing: zoom
+          ? (
+              [
+                [SCOPES.recordings, 'recordings'],
+                [SCOPES.users, 'hosts'],
+                [SCOPES.readMeeting, 'start'],
+              ] as const
+            )
+              .filter(([scope]) => !hasScope(zoom.scopes ?? [], scope))
+              .map(([, feature]) => feature)
+          : [],
       },
       joinLinks: s!.links,
       presentMinPct: s!.present,

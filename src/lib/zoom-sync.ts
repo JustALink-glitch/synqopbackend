@@ -1,7 +1,7 @@
 import type { Sql } from './db.js'
 import type { Mailer } from './mailer.js'
 import { deliver } from './notifications.js'
-import { withZoom, ZoomError, type TokenBox, type ZoomApi, type ZoomParticipant } from './zoom.js'
+import { hasScope, SCOPES, withZoom, ZoomError, type TokenBox, type ZoomApi, type ZoomParticipant, type ZoomUser } from './zoom.js'
 
 /**
  * Zoom work for connected organisations (F1.07, C1.02, C2.04), run by the scheduler and, through `zoomSoon`, just after
@@ -26,7 +26,7 @@ const IMPORT_FOR_DAYS = 3
 /** Zoom limits meeting changes per day; keep each run small. */
 const PER_RUN = 25
 
-export type ZoomCounts = { created: number; updated: number; deleted: number; registered: number; imported: number; failed: number }
+export type ZoomCounts = { created: number; updated: number; deleted: number; registered: number; imported: number; recorded: number; failed: number }
 
 interface SessionRow {
   id: string
@@ -35,6 +35,7 @@ interface SessionRow {
   starts_at: Date
   ends_at: Date
   zoom_meeting_id: string | null
+  trainer_email: string | null
 }
 
 const errorText = (error: unknown) =>
@@ -75,21 +76,34 @@ export function zoomSoon(deps: ZoomSyncDeps, delayMs = 400) {
 }
 
 export async function syncZoom(deps: ZoomSyncDeps, organisationId: string, now = new Date()): Promise<ZoomCounts> {
-  const counts: ZoomCounts = { created: 0, updated: 0, deleted: 0, registered: 0, imported: 0, failed: 0 }
-  const [settings] = await deps.sql<{ time_zone: string; personal: boolean }[]>`
-    select o.time_zone, s.join_link_mode = 'personal' as personal from public.organisations o join public.organisation_settings s on s.organisation_id = o.id where o.id = ${organisationId}
+  const counts: ZoomCounts = { created: 0, updated: 0, deleted: 0, registered: 0, imported: 0, recorded: 0, failed: 0 }
+  const [settings] = await deps.sql<{ time_zone: string; personal: boolean; share_recordings: boolean }[]>`
+    select o.time_zone, s.join_link_mode = 'personal' as personal, s.recordings_shared as share_recordings from public.organisations o join public.organisation_settings s on s.organisation_id = o.id where o.id = ${organisationId}
   `
   if (!settings) return counts
-  const meeting = (s: SessionRow) => ({
+  const [conn] = await deps.sql<{ scopes: string[] | null; users: ZoomUser[]; users_checked_at: Date | null; zoom_user_email: string | null }[]>`
+    select scopes, users, users_checked_at, zoom_user_email from public.zoom_connections where organisation_id = ${organisationId}
+  `
+  if (!conn) return counts
+  const scopes = conn.scopes ?? []
+  // Cloud recording when the organisation shares recordings (Settings › Attendance & Zoom) and has approved the
+  // recordings permission (Nov 2026). Off otherwise, so Zoom's storage isn't used up.
+  const record = settings.share_recordings && hasScope(scopes, SCOPES.recordings)
+  const meeting = (s: SessionRow, hostId?: string | null) => ({
     topic: `${s.course} · ${s.cohort}`,
     startTime: s.starts_at,
     durationMinutes: Math.max(15, Math.round((s.ends_at.getTime() - s.starts_at.getTime()) / 60_000)),
     timeZone: settings.time_zone,
     registration: settings.personal,
+    record,
+    ...(hostId !== undefined && { hostId }),
   })
   const select = (where: ReturnType<Sql>) => deps.sql<SessionRow[]>`
-    select s.id, co.name as course, h.name as cohort, s.starts_at, s.ends_at, s.zoom_meeting_id
+    select s.id, co.name as course, h.name as cohort, s.starts_at, s.ends_at, s.zoom_meeting_id,
+           lower(coalesce(t.email, (select m.email from public.cohort_course_trainers ct join public.organisation_members m on m.id = ct.member_id
+                                     where ct.cohort_course_id = s.cohort_course_id and ct.is_lead limit 1))) as trainer_email
     from public.sessions s join public.cohort_courses x on x.id = s.cohort_course_id join public.courses co on co.id = x.course_id join public.cohorts h on h.id = x.cohort_id
+    left join public.organisation_members t on t.id = s.trainer_member_id
     where s.organisation_id = ${organisationId} and ${where}
     order by s.starts_at limit ${PER_RUN}
   `
@@ -98,6 +112,18 @@ export async function syncZoom(deps: ZoomSyncDeps, organisationId: string, now =
     deps,
     organisationId,
     async (token) => {
+      // The account's licensed users, checked once a day, so classes at the same time get different hosts.
+      let users = conn.users ?? []
+      if (hasScope(scopes, SCOPES.users) && (!conn.users_checked_at || now.getTime() - conn.users_checked_at.getTime() > 86_400_000)) {
+        try {
+          users = await deps.zoom.users(token)
+          await deps.sql`update public.zoom_connections set users = ${deps.sql.json(users as never)}, users_checked_at = ${now} where organisation_id = ${organisationId}`
+        } catch (error) {
+          if (error instanceof ZoomError && error.revoked) throw error
+        }
+      }
+      const pickHost = (s: SessionRow) => chooseHost(deps.sql, organisationId, s, users, conn.zoom_user_email)
+
       // Cancelled, moved in person, or given a pasted link: remove the meeting Synqop made.
       for (const s of await select(deps.sql`s.zoom_sync_needed and s.zoom_meeting_id is not null and (s.cancelled_at is not null or not s.zoom_managed)`)) {
         try {
@@ -131,10 +157,12 @@ export async function syncZoom(deps: ZoomSyncDeps, organisationId: string, now =
         and s.starts_at > ${now} and s.starts_at < ${new Date(now.getTime() + AHEAD_DAYS * 86_400_000)}
       `)) {
         try {
-          const created = await deps.zoom.createMeeting(token, meeting(s))
+          const hostId = await pickHost(s)
+          const created = await deps.zoom.createMeeting(token, meeting(s, hostId))
           // If someone pasted a link while Zoom was working, theirs wins and the new meeting is removed next run.
           const [kept] = await deps.sql`
-            update public.sessions set zoom_meeting_id = ${created.id}, zoom_join_url = ${created.joinUrl}, zoom_managed = true, zoom_sync_needed = false, zoom_sync_error = null
+            update public.sessions set zoom_meeting_id = ${created.id}, zoom_join_url = ${created.joinUrl}, zoom_host_id = ${hostId}, zoom_managed = true,
+                   zoom_sync_needed = false, zoom_sync_error = null
             where id = ${s.id} and zoom_join_url is null and zoom_meeting_id is null returning id
           `
           if (!kept) await deps.zoom.deleteMeeting(token, created.id).catch(() => undefined)
@@ -177,11 +205,76 @@ export async function syncZoom(deps: ZoomSyncDeps, organisationId: string, now =
       }
 
       counts.imported += await importAttendance(deps, organisationId, token, now)
+      if (hasScope(scopes, SCOPES.recordings)) counts.recorded += await importRecordings(deps, organisationId, token, now)
       return true
     },
     now,
   )
   return counts
+}
+
+/**
+ * Who hosts a new meeting (pilot feedback, Nov 2026): the trainer's own licensed Zoom user if they have one and are free,
+ * else the connected account if free, else any free licensed user ("rooms"). Null means the connected account.
+ * Without the users permission there is no list, and the connected account hosts everything, as before.
+ */
+export async function chooseHost(
+  sql: Sql,
+  organisationId: string,
+  s: { id: string; starts_at: Date; ends_at: Date; trainer_email: string | null },
+  users: ZoomUser[],
+  connectedEmail: string | null,
+): Promise<string | null> {
+  const licensed = users.filter((u) => u.type === 2)
+  if (!licensed.length) return null
+  const busy = await sql<{ host: string }[]>`
+    select coalesce(zoom_host_id, 'me') as host from public.sessions
+    where organisation_id = ${organisationId} and zoom_managed and cancelled_at is null and id <> ${s.id}
+      and starts_at < ${s.ends_at} and ends_at > ${s.starts_at}
+  `
+  const connected = licensed.find((u) => u.email === connectedEmail?.toLowerCase())
+  const taken = new Set(busy.map((b) => (b.host === 'me' && connected ? connected.id : b.host)))
+  const meFree = !taken.has('me') && !(connected && taken.has(connected.id))
+  const trainer = licensed.find((u) => u.email === s.trainer_email)
+  if (trainer && !taken.has(trainer.id)) return trainer.id === connected?.id ? null : trainer.id
+  if (meFree) return null
+  const room = licensed.find((u) => u.id !== connected?.id && !taken.has(u.id))
+  return room?.id ?? null
+}
+
+/** Recordings (pilot feedback, Nov 2026): Zoom keeps the video; Synqop links to it once Zoom has processed it. */
+async function importRecordings(deps: ZoomSyncDeps, organisationId: string, token: string, now: Date) {
+  const ended = await deps.sql<{ id: string; meeting_id: string; ends_at: Date }[]>`
+    select s.id, s.zoom_meeting_id as meeting_id, s.ends_at from public.sessions s
+    where s.organisation_id = ${organisationId} and s.cancelled_at is null and s.zoom_meeting_id is not null and s.recording_status is null
+      and s.ends_at <= ${new Date(now.getTime() - IMPORT_AFTER_MINUTES * 60_000)} and s.ends_at > ${new Date(now.getTime() - IMPORT_FOR_DAYS * 86_400_000)}
+      and (s.recording_checked_at is null or s.recording_checked_at < ${new Date(now.getTime() - 15 * 60_000)})
+    order by s.ends_at limit ${PER_RUN}
+  `
+  let found = 0
+  for (const s of ended) {
+    try {
+      const r = await deps.zoom.recording(token, s.meeting_id)
+      if (r) {
+        await deps.sql`
+          update public.sessions set recording_url = ${r.shareUrl}, recording_passcode = ${r.passcode}, recording_minutes = ${r.minutes},
+                 recording_status = 'ready', recording_checked_at = ${now}
+          where id = ${s.id}
+        `
+        found++
+      } else {
+        // Zoom can take as long as the meeting to process it; after two days there isn't one.
+        const giveUp = now.getTime() - s.ends_at.getTime() > 2 * 86_400_000
+        await deps.sql`update public.sessions set recording_checked_at = ${now}, recording_status = ${giveUp ? 'none' : null} where id = ${s.id}`
+      }
+    } catch (error) {
+      if (error instanceof ZoomError && error.revoked) throw error
+      await deps.sql`update public.sessions set recording_checked_at = ${now} where id = ${s.id}`
+      // No permission or no cloud recording on this plan: stop for this run.
+      if (error instanceof ZoomError && (error.status === 403 || error.status === 400)) break
+    }
+  }
+  return found
 }
 
 /** C2.01 / C2.04: attendance from the Zoom report, once the meeting has ended. */

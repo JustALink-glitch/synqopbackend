@@ -18,6 +18,7 @@ const Intervention = z.object({
 })
 
 const Resolve = z.object({ note: z.string().trim().min(1, 'Add a note. It’s kept with the flag.').max(1000) })
+const ResolveMany = Resolve.extend({ memberIds: z.array(uuid).min(1).max(200) })
 
 const isAdmin = (auth: AuthContext) => auth.role === 'owner' || auth.role === 'admin'
 
@@ -231,6 +232,38 @@ export function attentionRoutes(deps: AppDeps) {
           return row!.id
         })
         return c.json({ intervention: { id } }, 201)
+      })
+
+      // D1.02 for several at once (pilot feedback, Nov 2026): one note, kept with every flag it closes.
+      .post('/participants/resolve', async (c) => {
+        const body = await parseBody(c, ResolveMany)
+        const auth = c.var.auth
+        if (!(await canResolve(deps.sql, auth))) throw forbidden('Only admins can resolve flags.')
+        const hidden = await hiddenFor(deps.sql, auth)
+        const enrolments = await deps.sql<{ id: string }[]>`
+          select distinct on (e.member_id) e.id
+          from public.enrolments e
+          join public.organisation_members m on m.id = e.member_id
+          join public.cohorts h on h.id = e.cohort_id
+          where e.member_id in ${deps.sql(body.memberIds)} and e.organisation_id = ${auth.organisationId} and m.role = 'participant'
+            ${scope(deps.sql, auth, hidden)}
+          order by e.member_id, (e.status = 'active') desc, e.enrolled_at desc
+        `
+        if (!enrolments.length) return c.json({ resolved: 0, participants: 0 })
+        const result = await deps.sql.begin(async (tx) => {
+          const rows = await tx<{ enrolment_id: string; rule: string }[]>`
+            update public.attention_flags set resolved_at = ${now()}, resolved_by = ${auth.memberId}, resolution_note = ${body.note}
+            where enrolment_id in ${tx(enrolments.map((e) => e.id))} and cleared_at is null and resolved_at is null
+            returning enrolment_id, rule
+          `
+          const byEnrolment = new Map<string, string[]>()
+          for (const r of rows) byEnrolment.set(r.enrolment_id, [...(byEnrolment.get(r.enrolment_id) ?? []), r.rule])
+          for (const [enrolmentId, rules] of byEnrolment) {
+            await audit(tx, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action: 'attention.resolved', entityType: 'enrolment', entityId: enrolmentId, data: { rules, bulk: true }, requestId: c.var.requestId })
+          }
+          return { resolved: rows.length, participants: byEnrolment.size }
+        })
+        return c.json(result)
       })
 
       // D1.02 Resolve: admins close every open flag for the participant, with a note.

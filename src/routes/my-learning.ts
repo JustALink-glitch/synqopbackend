@@ -25,6 +25,9 @@ interface MySessionRow {
   mode: 'online' | 'in_person'
   location: string | null
   zoom_join_url: string | null
+  recording_url: string | null
+  recording_passcode: string | null
+  recording_minutes: number | null
   cancellation_reason: string | null
   cohort_course_id: string
   course_id: string
@@ -54,6 +57,9 @@ function selectMySessions(sql: Sql, auth: AuthContext, filter: { id?: string; co
       from public.sessions s where s.organisation_id = ${auth.organisationId}
     )
     select s.id, s.starts_at, s.ends_at, public.status(s) as status, s.mode, s.location, coalesce(jl.join_url, s.zoom_join_url) as zoom_join_url, s.cancellation_reason,
+           -- Shared with participants only when Settings › Attendance & Zoom says so, for the days it allows (F1.07).
+           case when st.recordings_shared and s.ends_at + make_interval(days => st.recording_retention_days) > now() then s.recording_url end as recording_url,
+           s.recording_passcode, s.recording_minutes,
            x.id as cohort_course_id, co.id as course_id, co.name as course_name, h.id as cohort_id, h.name as cohort_name,
            e.status as enrolment_status,
            coalesce(t.first_name, lt.first_name) as trainer_first, coalesce(t.last_name, lt.last_name) as trainer_last,
@@ -74,6 +80,7 @@ function selectMySessions(sql: Sql, auth: AuthContext, filter: { id?: string; co
     left join public.attendance_records a on a.session_id = s.id and a.member_id = e.member_id
     -- F1.07 personal join links: their own Zoom link when Zoom registered them.
     left join public.session_join_links jl on jl.session_id = s.id and jl.member_id = e.member_id
+    join public.organisation_settings st on st.organisation_id = e.organisation_id
     where e.member_id = ${auth.memberId} and e.organisation_id = ${auth.organisationId}
       and e.status in ('active', 'completed')
       ${filter.id ? sql`and s.id = ${filter.id}` : sql``}
@@ -99,6 +106,8 @@ function toSession(r: MySessionRow, now: number) {
     location: r.location,
     joinUrl: joinable ? r.zoom_join_url : null,
     cancellationReason: r.cancellation_reason,
+    // The class recording, for everyone in the cohort (pilot feedback, Nov 2026).
+    recording: r.recording_url && r.status !== 'cancelled' ? { url: r.recording_url, passcode: r.recording_passcode, minutes: r.recording_minutes } : null,
     trainer: name(r.trainer_first, r.trainer_last),
     trainerBio: r.trainer_bio,
     number: r.number,
