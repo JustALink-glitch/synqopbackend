@@ -182,16 +182,18 @@ export function renderEmail(input: EmailInput) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light">
-<meta name="supported-color-schemes" content="light">
+<meta name="color-scheme" content="light only">
+<meta name="supported-color-schemes" content="light only">
 <title>${e(input.title)}</title>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+  :root{color-scheme:light only;supported-color-schemes:light only}
   body{margin:0;padding:0;-webkit-text-size-adjust:100%}
   a{color:${C.blue}}
   @media (max-width:620px){
     .outer{padding:0!important}
     .pad{padding-left:24px!important;padding-right:24px!important}
+    .padh{padding-left:14px!important;padding-right:14px!important}
     .lbl{width:38%!important}
     .btn,.btn td,.btn a{display:block!important;width:100%!important;text-align:center!important;box-sizing:border-box}
   }
@@ -202,13 +204,19 @@ export function renderEmail(input: EmailInput) {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="${C.canvas}" style="background:${C.canvas}">
   <tr><td align="center" class="outer" style="padding:32px 16px">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#FFFFFF;font-family:${FONT}">
-      <tr><td class="pad" style="padding:32px 40px 0">
+      <tr><td class="padh" style="padding:26px 30px 0">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
           <tr>
-            <td style="padding:0 0 32px;vertical-align:middle"><img src="${EMAIL_LOGO}" width="110" height="24" alt="Synqop" style="display:block;border:0;height:24px;width:110px;font-size:16px;font-weight:700;color:${C.blue}"></td>
-            ${input.organisationName ? `<td align="right" style="padding:0 0 32px 16px;vertical-align:middle;font-size:12px;line-height:16px;color:${C.subtle}">${e(input.organisationName)}</td>` : ''}
+            <td style="padding:0 0 26px;vertical-align:middle">
+              <!-- The logo sits on a white tile drawn as a gradient: the Gmail apps repaint colours in dark mode
+                   but leave gradients alone, so the dark wordmark stays readable. Invisible on the white card. -->
+              <table role="presentation" cellpadding="0" cellspacing="0"><tr><td bgcolor="#FFFFFF" style="background-color:#FFFFFF;background-image:linear-gradient(#FFFFFF,#FFFFFF);border-radius:6px;padding:6px 10px"><img src="${EMAIL_LOGO}" width="110" height="24" alt="Synqop" style="display:block;border:0;height:24px;width:110px;font-size:16px;font-weight:700;color:${C.blue}"></td></tr></table>
+            </td>
+            ${input.organisationName ? `<td align="right" style="padding:0 10px 26px 16px;vertical-align:middle;font-size:12px;line-height:16px;color:${C.subtle}">${e(input.organisationName)}</td>` : ''}
           </tr>
         </table>
+      </td></tr>
+      <tr><td class="pad" style="padding:0 40px">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
           ${status}
           ${cell(`padding:0 0 12px;font-size:22px;line-height:30px;font-weight:600;letter-spacing:-0.01em;color:${C.ink}`, e(input.title))}
