@@ -84,7 +84,7 @@ export function createSupabaseAuthAdmin(supabase: SupabaseClient, sql: Sql): Aut
         if (error.code === 'weak_password') return { ok: false, reason: 'weak_password' }
         throw error
       }
-      return { ok: true, link: data.properties.action_link }
+      return { ok: true, link: confirmLink(redirectTo, data.properties.hashed_token, 'signup') }
     },
 
     async generateRecoveryLink(email, redirectTo) {
@@ -97,7 +97,21 @@ export function createSupabaseAuthAdmin(supabase: SupabaseClient, sql: Sql): Aut
         if (error.code === 'user_not_found' || error.status === 404) return null
         throw error
       }
-      return data.properties.action_link
+      return confirmLink(redirectTo, data.properties.hashed_token, 'recovery')
     },
   }
+}
+
+/**
+ * Email links open Synqop, not the Supabase project URL (Nov 2026): app.synqop.com/auth/confirm checks the one-time
+ * token in the browser, then continues to `redirectTo`. Trustworthy-looking links, and mail scanners that only fetch
+ * the page (without running it) can't use the token up.
+ */
+export function confirmLink(redirectTo: string, tokenHash: string, type: 'signup' | 'recovery'): string {
+  const target = new URL(redirectTo)
+  const link = new URL('/auth/confirm', target.origin)
+  link.searchParams.set('token_hash', tokenHash)
+  link.searchParams.set('type', type)
+  link.searchParams.set('next', target.pathname + target.search)
+  return link.toString()
 }

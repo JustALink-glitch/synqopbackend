@@ -1,3 +1,4 @@
+import { confirmLink } from '../../src/lib/auth-admin.js'
 import type { PushSender } from '../../src/lib/push.js'
 import type { HumanCheck } from '../../src/lib/human-check.js'
 import { createApp } from '../../src/app.js'
@@ -46,13 +47,13 @@ export function fakeAuthAdmin(sql: Sql) {
       const [row] = await sql<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`
       passwords.set(row!.id, password)
       signupLinks.push({ email, name, redirectTo })
-      return { ok: true, link: `https://auth.example/verify?type=signup&token=fake&redirect_to=${encodeURIComponent(redirectTo)}` }
+      return { ok: true, link: confirmLink(redirectTo, 'fake-hash', 'signup') }
     },
     async generateRecoveryLink(email, redirectTo) {
       const [row] = await sql`select id from auth.users where lower(email) = ${email.toLowerCase()}`
       if (!row) return null
       recoveryLinks.push({ email, redirectTo })
-      return `https://auth.example/verify?type=recovery&token=fake&redirect_to=${encodeURIComponent(redirectTo)}`
+      return confirmLink(redirectTo, 'fake-hash', 'recovery')
     },
   }
   return { admin, passwords, deleted, recoveryLinks, signupLinks }

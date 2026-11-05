@@ -64,7 +64,8 @@ describe.skipIf(!TEST_DATABASE_URL)('sign-up through the API (R1.01) and the bot
     const email = t.mail.sent.at(-1)!
     expect(email).toMatchObject({ to: 'ada@aliwa.org', subject: 'Confirm your email for Synqop' })
     expect(email.text).toContain('Hi Ada,')
-    expect(email.html).toContain('https://auth.example/verify?type=signup')
+    // The link opens Synqop, which checks the token, then continues to organisation set-up.
+    expect(email.html).toContain('/auth/confirm?token_hash=fake-hash&amp;type=signup&amp;next=%2Fsignup%2Forganisation')
   })
 
   it('says on screen when the email already has an account, and sends nothing (pilot feedback)', async () => {
