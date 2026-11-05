@@ -41,6 +41,9 @@ const escapeHtml = (value: string) =>
  * The shared transactional template (§07): title, intro, one primary button, note.
  * Final visual design follows the X2 email frames.
  */
+/** The Synqop logo (Nov 2026 identity), hosted with the web app; the alt text shows where images are blocked. */
+const EMAIL_LOGO = 'https://app.synqop.com/email-logo.png'
+
 export function renderEmail(input: {
   title: string
   intro: string
@@ -72,7 +75,7 @@ export function renderEmail(input: {
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px">
     <tr><td align="center">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#FFFFFF;border:1px solid #E7ECF1;border-radius:12px;padding:32px">
-        <tr><td style="font-size:15px;font-weight:600;color:#2563EB;padding-bottom:24px">Synqop</td></tr>
+        <tr><td style="padding-bottom:24px"><img src="${EMAIL_LOGO}" width="110" height="24" alt="Synqop" style="display:block;border:0;height:24px;width:110px;font-size:15px;font-weight:600;color:#2563EB" /></td></tr>
         <tr><td style="font-size:20px;line-height:28px;font-weight:600;padding-bottom:12px">${escapeHtml(input.title)}</td></tr>
         <tr><td style="font-size:14px;line-height:20px;color:#5C6777;padding-bottom:24px;white-space:pre-line">${escapeHtml(input.intro)}</td></tr>
         ${
