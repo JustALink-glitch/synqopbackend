@@ -279,12 +279,13 @@ export function reportRoutes(deps: AppDeps) {
         const subject = `Session report ${stateOf(row, now()) === 'overdue' ? 'overdue' : 'due'}: ${row.course_name}, ${day}`
         const { text, html } = renderEmail({
           title: subject,
+          organisationName: org!.name,
+          status: stateOf(row, now()) === 'overdue' ? { label: 'Report overdue', tone: 'amber' } : { label: 'Report due', tone: 'blue' },
           intro: `Hi ${row.trainer_first}, please submit your session report for ${row.course_name} in ${row.cohort_name} on ${day}. It takes a couple of minutes — a few multiple-choice questions and a short summary.`,
           buttonLabel: 'Write report',
           buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/trainer/reports/${row.session_id}`,
-          note: `Sent by ${org!.name} through Synqop.`,
         })
-        await deps.mailer.send({ to: row.trainer_email, subject, text, html })
+        await deps.mailer.send({ to: row.trainer_email, subject, text, html, fromName: org!.name })
         await audit(deps.sql, { organisationId: auth.organisationId, actorMemberId: auth.memberId, action: 'session_report.reminded', entityType: 'session', entityId: row.session_id, requestId: c.var.requestId })
         return c.json({ sent: true, to: name(row.trainer_first, row.trainer_last) })
       })

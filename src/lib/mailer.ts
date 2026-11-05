@@ -3,6 +3,8 @@ export interface EmailMessage {
   subject: string
   text: string
   html: string
+  /** Shown as the sender's name: "Mindspark Inc via Synqop". The address stays Synqop's own. */
+  fromName?: string
 }
 
 export interface Mailer {
@@ -18,6 +20,14 @@ export function createConsoleMailer(): Mailer {
   }
 }
 
+/** "Synqop <notifications@mail.synqop.com>" + "Mindspark Inc" → "Mindspark Inc via Synqop <notifications@mail.synqop.com>". */
+export function senderAs(from: string, organisationName: string): string {
+  const address = from.match(/<([^>]+)>/)?.[1] ?? from.trim()
+  // Characters that would break the From header (quotes, brackets, separators, line breaks) are dropped.
+  const name = organisationName.replace(/["<>\\,;:@\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60)
+  return name ? `"${name} via Synqop" <${address}>` : from
+}
+
 /** Production: send through Resend (https://resend.com). */
 export function createResendMailer(options: { apiKey: string; from: string }): Mailer {
   return {
@@ -25,7 +35,13 @@ export function createResendMailer(options: { apiKey: string; from: string }): M
       const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: options.from, ...message }),
+        body: JSON.stringify({
+          from: message.fromName ? senderAs(options.from, message.fromName) : options.from,
+          to: message.to,
+          subject: message.subject,
+          text: message.text,
+          html: message.html,
+        }),
       })
       if (!response.ok) {
         throw new Error(`Resend rejected the email (${response.status}): ${await response.text()}`)
@@ -37,67 +53,181 @@ export function createResendMailer(options: { apiKey: string; from: string }): M
 const escapeHtml = (value: string) =>
   value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
 
-/**
- * The shared transactional template (§07): title, intro, one primary button, note.
- * Final visual design follows the X2 email frames.
- */
 /** The Synqop logo (Nov 2026 identity), hosted with the web app; the alt text shows where images are blocked. */
 const EMAIL_LOGO = 'https://app.synqop.com/email-logo.png'
 
-export function renderEmail(input: {
+/** Brand tokens (Synqop Marketing & Design › Product emails v1). Geist first; Arial where a mail app can't load it. */
+const C = {
+  ink: '#0E131A',
+  body: '#334155',
+  muted: '#5C6777',
+  subtle: '#76808D',
+  line: '#E7ECF1',
+  canvas: '#EFF2F6',
+  band: '#F8FAFC',
+  blue: '#2563EB',
+}
+const FONT = "Geist,'Helvetica Neue',Helvetica,Arial,sans-serif"
+
+/** Status tag above the title: a coloured dot and a short label ("Session cancelled", "Export ready"). */
+export type EmailTone = 'blue' | 'green' | 'amber' | 'red'
+const TONES: Record<EmailTone, { dot: string; text: string }> = {
+  blue: { dot: '#2563EB', text: '#1A46A7' },
+  green: { dot: '#16A34A', text: '#107435' },
+  amber: { dot: '#D97706', text: '#9A5404' },
+  red: { dot: '#DC2626', text: '#9C1B1B' },
+}
+
+export interface EmailSection {
+  /** Small capitals heading, e.g. "New flags · 25". */
+  heading: string
+  items: { title: string; meta?: string; tone?: EmailTone }[]
+  /** "and 20 more", shown under the list. */
+  more?: string
+}
+
+export interface EmailInput {
   title: string
   intro: string
+  /** Shown top-right and in the footer ("Sent by Mindspark Inc through Synqop"). Leave out for Synqop's own emails. */
+  organisationName?: string
+  status?: { label: string; tone: EmailTone }
   /** Label / value rows under the intro (X2 frames: When, Where, Trainer…). */
   details?: { label: string; value: string }[]
+  /** Lists for digests: flagged participants, overdue reports, submissions to grade. */
+  sections?: EmailSection[]
   buttonLabel: string
   buttonUrl: string
   note?: string
   /** "Button not working? Paste this into your browser: …" */
   showLinkFallback?: boolean
-  /** Small print under the card. */
+  /** Why they got it, under the sender line. */
   footer?: string
-}) {
+}
+
+/**
+ * The shared transactional template (X2 / Product emails v1). Every product email goes through here,
+ * so a change to this function restyles all of them. Tables and inline styles, so Gmail and Outlook agree.
+ */
+export function renderEmail(input: EmailInput) {
+  const sender = input.organisationName ? `Sent by ${input.organisationName} through Synqop.` : 'Synqop · www.synqop.com'
   const text = [
+    input.status ? `[${input.status.label}]` : '',
     input.title,
     '',
     input.intro,
     '',
-    ...(input.details?.length ? [...input.details.map((d) => `${d.label}: ${d.value}`), ''] : []),
+    ...(input.details?.length ? [...input.details.map((d) => (d.label ? `${d.label}: ${d.value}` : `  ${d.value}`)), ''] : []),
+    ...(input.sections ?? []).flatMap((s) => [s.heading.toUpperCase(), ...s.items.map((i) => `- ${i.title}${i.meta ? ` (${i.meta})` : ''}`), ...(s.more ? [`  ${s.more}`] : []), '']),
     `${input.buttonLabel}: ${input.buttonUrl}`,
     input.note ? `\n${input.note}` : '',
-    input.footer ? `\n${input.footer}` : '',
+    '',
+    '—',
+    sender,
+    input.footer ?? '',
   ]
     .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
 
+  const e = escapeHtml
+  const cell = (style: string, html: string) => `<tr><td style="${style}">${html}</td></tr>`
+  const divider = `border-top:1px solid ${C.line}`
+
+  const status = input.status
+    ? cell(
+        'padding:0 0 12px',
+        `<span style="display:inline-block;width:8px;height:8px;border-radius:4px;background:${TONES[input.status.tone].dot};vertical-align:middle"></span>&nbsp;<span style="font-size:12px;line-height:16px;font-weight:500;color:${TONES[input.status.tone].text};vertical-align:middle">${e(input.status.label)}</span>`,
+      )
+    : ''
+
+  const details = input.details?.length
+    ? cell(
+        'padding:0 0 24px',
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${input.details
+          .map(
+            (d) =>
+              `<tr><td class="lbl" style="font-size:13px;line-height:20px;color:${C.subtle};padding:10px 16px 10px 0;width:32%;vertical-align:top;${divider}">${e(d.label)}</td><td style="font-size:14px;line-height:20px;color:${C.ink};padding:10px 0;vertical-align:top;${divider}">${e(d.value)}</td></tr>`,
+          )
+          .join('')}<tr><td colspan="2" style="${divider};font-size:0;line-height:0">&nbsp;</td></tr></table>`,
+      )
+    : ''
+
+  const sections = (input.sections ?? [])
+    .map((s) =>
+      cell(
+        'padding:0 0 24px',
+        `<div style="font-size:11px;line-height:16px;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;color:${C.subtle};padding:0 0 8px">${e(s.heading)}</div>` +
+          `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">${s.items
+            .map((it) => {
+              const dot = it.tone ? `<span style="display:inline-block;width:6px;height:6px;border-radius:3px;background:${TONES[it.tone].dot};vertical-align:middle;margin-right:8px"></span>` : ''
+              return `<tr><td style="${divider};padding:10px 0">${dot}<span style="font-size:14px;line-height:20px;font-weight:500;color:${C.ink};vertical-align:middle">${e(it.title)}</span>${
+                it.meta ? `<div style="font-size:12px;line-height:18px;color:${C.subtle};padding:2px 0 0${it.tone ? ';padding-left:14px' : ''}">${e(it.meta)}</div>` : ''
+              }</td></tr>`
+            })
+            .join('')}<tr><td style="${divider};font-size:0;line-height:0">&nbsp;</td></tr></table>` +
+          (s.more ? `<div style="font-size:13px;line-height:20px;color:${C.muted};padding:4px 0 0">${e(s.more)}</div>` : ''),
+      ),
+    )
+    .join('')
+
+  // Bulletproof button: the table cell carries the colour, so Outlook still shows a blue block.
+  const button = cell(
+    'padding:0 0 24px',
+    `<table role="presentation" cellpadding="0" cellspacing="0" class="btn"><tr><td bgcolor="${C.blue}" style="border-radius:8px;background:${C.blue}"><a href="${e(input.buttonUrl)}" style="display:inline-block;padding:12px 20px;font-family:${FONT};font-size:14px;line-height:20px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:8px">${e(input.buttonLabel)}</a></td></tr></table>`,
+  )
+
   const html = `<!doctype html>
-<html><body style="margin:0;background:#F8FAFC;font-family:Inter,Arial,sans-serif;color:#151B24">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px">
-    <tr><td align="center">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#FFFFFF;border:1px solid #E7ECF1;border-radius:12px;padding:32px">
-        <tr><td style="padding-bottom:24px"><img src="${EMAIL_LOGO}" width="110" height="24" alt="Synqop" style="display:block;border:0;height:24px;width:110px;font-size:15px;font-weight:600;color:#2563EB" /></td></tr>
-        <tr><td style="font-size:20px;line-height:28px;font-weight:600;padding-bottom:12px">${escapeHtml(input.title)}</td></tr>
-        <tr><td style="font-size:14px;line-height:20px;color:#5C6777;padding-bottom:24px;white-space:pre-line">${escapeHtml(input.intro)}</td></tr>
-        ${
-          input.details?.length
-            ? `<tr><td style="padding-bottom:24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7ECF1;border-radius:8px;border-collapse:separate">${input.details
-                .map(
-                  (d, i) =>
-                    `<tr><td style="font-size:13px;color:#76808D;padding:10px 12px;width:35%;vertical-align:top${i ? ';border-top:1px solid #E7ECF1' : ''}">${escapeHtml(d.label)}</td><td style="font-size:13px;color:#151B24;padding:10px 12px;vertical-align:top${i ? ';border-top:1px solid #E7ECF1' : ''}">${escapeHtml(d.value)}</td></tr>`,
-                )
-                .join('')}</table></td></tr>`
-            : ''
-        }
-        <tr><td style="padding-bottom:24px">
-          <a href="${escapeHtml(input.buttonUrl)}" style="display:inline-block;background:#2563EB;color:#FFFFFF;text-decoration:none;font-size:13px;font-weight:600;padding:10px 16px;border-radius:8px">${escapeHtml(input.buttonLabel)}</a>
-        </td></tr>
-        ${input.note ? `<tr><td style="font-size:12px;line-height:16px;color:#76808D">${escapeHtml(input.note)}</td></tr>` : ''}
-        ${input.showLinkFallback ? `<tr><td style="font-size:12px;line-height:16px;color:#76808D;padding-top:16px;word-break:break-all">Button not working? Paste this into your browser: ${escapeHtml(input.buttonUrl)}</td></tr>` : ''}
-      </table>
-      ${input.footer ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px"><tr><td style="font-size:12px;line-height:16px;color:#76808D;padding:16px 4px 0">${escapeHtml(input.footer)}</td></tr></table>` : ''}
-    </td></tr>
-  </table>
-</body></html>`
+<html lang="en-GB" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>${e(input.title)}</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body{margin:0;padding:0;-webkit-text-size-adjust:100%}
+  a{color:${C.blue}}
+  @media (max-width:620px){
+    .outer{padding:0!important}
+    .pad{padding-left:24px!important;padding-right:24px!important}
+    .lbl{width:38%!important}
+    .btn,.btn td,.btn a{display:block!important;width:100%!important;text-align:center!important;box-sizing:border-box}
+  }
+</style>
+</head>
+<body style="margin:0;padding:0;background:${C.canvas};font-family:${FONT};color:${C.ink}">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:${C.canvas}">${e(input.intro.slice(0, 140))}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="${C.canvas}" style="background:${C.canvas}">
+  <tr><td align="center" class="outer" style="padding:32px 16px">
+    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:100%;max-width:600px;background:#FFFFFF;font-family:${FONT}">
+      <tr><td class="pad" style="padding:32px 40px 0">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="padding:0 0 32px;vertical-align:middle"><img src="${EMAIL_LOGO}" width="110" height="24" alt="Synqop" style="display:block;border:0;height:24px;width:110px;font-size:16px;font-weight:700;color:${C.blue}"></td>
+            ${input.organisationName ? `<td align="right" style="padding:0 0 32px 16px;vertical-align:middle;font-size:12px;line-height:16px;color:${C.subtle}">${e(input.organisationName)}</td>` : ''}
+          </tr>
+        </table>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          ${status}
+          ${cell(`padding:0 0 12px;font-size:22px;line-height:30px;font-weight:600;letter-spacing:-0.01em;color:${C.ink}`, e(input.title))}
+          ${cell(`padding:0 0 24px;font-size:14px;line-height:22px;color:${C.body};white-space:pre-line`, e(input.intro))}
+          ${details}
+          ${sections}
+          ${button}
+          ${input.note ? cell(`padding:0 0 16px;font-size:12px;line-height:18px;color:${C.subtle}`, e(input.note)) : ''}
+          ${input.showLinkFallback ? cell(`padding:0 0 16px;font-size:12px;line-height:18px;color:${C.subtle};word-break:break-all`, `Button not working? Paste this into your browser:<br><a href="${e(input.buttonUrl)}" style="color:${C.blue}">${e(input.buttonUrl)}</a>`) : ''}
+        </table>
+      </td></tr>
+      <tr><td class="pad" bgcolor="${C.band}" style="background:${C.band};padding:20px 40px 24px;margin-top:8px;font-size:12px;line-height:18px;color:${C.subtle}">
+        ${e(sender)}${input.footer ? `<br>${e(input.footer)}` : ''}
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>`
 
   return { text, html }
 }

@@ -609,6 +609,7 @@ export function memberRoutes(deps: AppDeps) {
         const signIn = `${deps.appUrl.replace(/\/$/, '')}/sign-in`
         const toNew = renderEmail({
           title: `You’re now the owner of ${result.org}`,
+          organisationName: result.org,
           intro: `Hi ${result.target.first_name}, ${result.me.first_name} ${result.me.last_name} made you the owner of ${result.org} on Synqop. You can now manage billing, data and every member, and transfer ownership again.`,
           buttonLabel: 'Open Synqop',
           buttonUrl: signIn,
@@ -616,14 +617,15 @@ export function memberRoutes(deps: AppDeps) {
         })
         const toOld = renderEmail({
           title: 'You transferred ownership',
+          organisationName: result.org,
           intro: `Hi ${result.me.first_name}, you made ${result.target.first_name} ${result.target.last_name} the owner of ${result.org} on Synqop. You’re now an admin.`,
           buttonLabel: 'Open Synqop',
           buttonUrl: signIn,
           note: 'If this wasn’t you, contact the new owner straight away and change your password.',
         })
         await Promise.all([
-          deps.mailer.send({ to: result.target.email, subject: `You’re now the owner of ${result.org}`, text: toNew.text, html: toNew.html }),
-          deps.mailer.send({ to: result.me.email, subject: `You transferred ownership of ${result.org}`, text: toOld.text, html: toOld.html }),
+          deps.mailer.send({ to: result.target.email, subject: `You’re now the owner of ${result.org}`, text: toNew.text, html: toNew.html, fromName: result.org }),
+          deps.mailer.send({ to: result.me.email, subject: `You transferred ownership of ${result.org}`, text: toOld.text, html: toOld.html, fromName: result.org }),
         ]).catch((e) => console.error('Ownership transfer email failed', e))
         return c.json({ owner: { id: result.target.id, name: `${result.target.first_name} ${result.target.last_name}` } })
       })
@@ -680,24 +682,26 @@ export function memberRoutes(deps: AppDeps) {
           const [org] = await deps.sql<{ name: string }[]>`select name from public.organisations where id = ${organisationId}`
           const { text, html } = renderEmail({
             title: 'Your sign-in email changed',
+            organisationName: org!.name,
             intro: `Hi ${body.fullName.firstName}, your programme team at ${org!.name} changed the email you sign in to Synqop with. From now on, sign in with ${body.email}.`,
             buttonLabel: 'Sign in',
             buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
             note: 'If you didn’t expect this, contact your programme team.',
           })
           await deps.mailer
-            .send({ to: body.email, subject: 'Your Synqop sign-in email changed', text, html })
+            .send({ to: body.email, subject: 'Your Synqop sign-in email changed', text, html, fromName: org!.name })
             .catch((e) => console.error('Email change notice failed', e))
           // The old address is told too, so a change nobody expected is noticed.
           const old = renderEmail({
             title: 'Your sign-in email changed',
+            organisationName: org!.name,
             intro: `Hi ${member.first_name}, your programme team at ${org!.name} changed the email you sign in to Synqop with from ${member.email} to ${body.email}.`,
             buttonLabel: 'Open Synqop',
             buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
             note: 'If you didn’t expect this, contact your programme team straight away.',
           })
           await deps.mailer
-            .send({ to: member.email, subject: 'Your Synqop sign-in email changed', text: old.text, html: old.html })
+            .send({ to: member.email, subject: 'Your Synqop sign-in email changed', text: old.text, html: old.html, fromName: org!.name })
             .catch((e) => console.error('Email change notice failed', e))
         }
         return c.json({ ok: true })
@@ -728,13 +732,14 @@ export function memberRoutes(deps: AppDeps) {
         `
           const { text, html } = renderEmail({
             title: `Your access to ${info!.org} has ended`,
+            organisationName: info!.org,
             intro: `Hi ${info!.first_name}, your programme team at ${info!.org} has ended your access to Synqop. Thank you for your work with them.`,
             buttonLabel: 'Open Synqop',
             buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
             note: 'If you think this is a mistake, contact your programme team.',
           })
           await deps.mailer
-            .send({ to: member.email, subject: `Your access to ${info!.org} has ended`, text, html })
+            .send({ to: member.email, subject: `Your access to ${info!.org} has ended`, text, html, fromName: info!.org })
             .catch((e) => console.error('Deactivation email failed', e))
         }
         return c.json({ ok: true })

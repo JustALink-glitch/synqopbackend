@@ -1,6 +1,6 @@
 import type { Role } from './roles.js'
 import type { Sql, Tx } from './db.js'
-import { renderEmail, type Mailer } from './mailer.js'
+import { renderEmail, type EmailInput, type Mailer } from './mailer.js'
 
 /**
  * Notification events people can tune, by role, with their defaults (P8.01 / P8.02). In-app also means push on
@@ -94,6 +94,8 @@ export interface EmailParts {
   note?: string
   /** Why they got it (X2 frames: "You get this because…"). */
   footer?: string
+  status?: EmailInput['status']
+  sections?: EmailInput['sections']
 }
 
 /**
@@ -105,9 +107,10 @@ export async function deliver(
   deps: { sql: Sql; mailer: Mailer; appUrl: string },
   input: { organisationId: string; to: Recipients; event: string; title: string; body?: string | null; link: string; email?: EmailParts; except?: string | null; inApp?: boolean },
 ) {
-  const people = await deps.sql<{ id: string; role: Role; email: string; first_name: string; in_app: boolean | null; by_email: boolean | null }[]>`
-    select m.id, m.role, m.email, m.first_name, p.in_app, p.email as by_email
+  const people = await deps.sql<{ id: string; role: Role; email: string; first_name: string; org_name: string; in_app: boolean | null; by_email: boolean | null }[]>`
+    select m.id, m.role, m.email, m.first_name, o.name as org_name, p.in_app, p.email as by_email
     from public.organisation_members m
+    join public.organisations o on o.id = m.organisation_id
     left join public.notification_preferences p on p.member_id = m.id and p.event = ${input.event}
     where m.organisation_id = ${input.organisationId} and m.status = 'active'
       ${'memberIds' in input.to ? deps.sql`and m.id = any(${input.to.memberIds}::uuid[])` : deps.sql`and m.role in ${deps.sql(input.to.roles)}`}
@@ -129,14 +132,17 @@ export async function deliver(
     const { text, html } = renderEmail({
       title: input.email.title,
       intro: input.email.intro(p.first_name),
+      organisationName: p.org_name,
+      status: input.email.status,
       details: input.email.details,
+      sections: input.email.sections,
       buttonLabel: input.email.buttonLabel,
       buttonUrl: url,
       note: input.email.note,
       footer: input.email.footer,
     })
     try {
-      await deps.mailer.send({ to: p.email, subject: input.email.subject, text, html })
+      await deps.mailer.send({ to: p.email, subject: input.email.subject, text, html, fromName: p.org_name })
       sent++
     } catch (error) {
       console.error(`Email for ${input.event} failed`, error)

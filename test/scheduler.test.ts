@@ -178,7 +178,10 @@ describe.skipIf(!TEST_DATABASE_URL)('scheduled jobs (X2)', () => {
     expect((await run()).digests).toBe(1)
     const [mail] = to(owner.email)
     expect(mail!.subject).toMatch(/^Synqop daily digest — /)
-    expect(mail!.text).toContain('New flags: Chidi Nwosu · Cohort 5 — missed 3 sessions in a row')
+    expect(mail!.text).toContain('NEW FLAGS · 1\n- Chidi Nwosu (Cohort 5 · missed 3 sessions in a row)')
+    // Sent in the organisation's name, with the organisation shown in the email itself.
+    expect(mail!.fromName).toBe('ALIWA Foundation')
+    expect(mail!.html).toContain('Sent by ALIWA Foundation through Synqop.')
     expect((await run()).digests).toBe(0)
   })
 

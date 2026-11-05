@@ -108,6 +108,7 @@ export function privacyRoutes(deps: AppDeps) {
       if (job!.email) {
         const { text, html } = renderEmail({
           title: 'Your data export is ready',
+          status: { label: 'Export ready', tone: 'green' },
           intro: `Hi ${job!.first_name ?? 'there'}, the export of ${organisationName}’s data you asked for is ready to download.`,
           buttonLabel: 'Download export',
           buttonUrl: settingsLink,
@@ -135,12 +136,16 @@ export function privacyRoutes(deps: AppDeps) {
           staff
             ? {
                 title: `${organisationName} is scheduled for deletion`,
+                organisationName,
+                status: { label: 'Deletion scheduled', tone: 'red' },
                 intro: `Hi ${p.first_name}, ${organisationName}’s Synqop workspace will be permanently deleted on ${when}. Until then it’s read-only. An owner can export data or cancel the deletion.`,
                 buttonLabel: 'Open Data & privacy',
                 buttonUrl: settingsLink,
               }
             : {
                 title: `${organisationName} is closing its Synqop workspace`,
+                organisationName,
+                status: { label: 'Workspace closing', tone: 'red' },
                 intro: `Hi ${p.first_name}, ${organisationName} is closing its workspace on ${when}. Until then you can still sign in to read and download your own records, such as grades and certificates.`,
                 buttonLabel: 'Sign in',
                 buttonUrl: `${appUrl}/sign-in`,

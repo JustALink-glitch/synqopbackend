@@ -371,14 +371,29 @@ async function digests(deps: SchedulerDeps, org: Org, now: Date) {
     // Nothing new: no digest today.
     if (!flags.length && !reports.length) continue
     const people = new Set(flags.map((x) => `${x.first_name} ${x.last_name}`)).size
-    const details = [
-      ...flags.slice(0, 5).map((x, i) => ({
-        label: i === 0 ? 'New flags' : '',
-        value: `${x.first_name} ${x.last_name} · ${x.cohort} — ${(flagText[x.rule] ?? (() => 'needs follow-up'))(x.details ?? {})}`,
-      })),
-      ...(flags.length > 5 ? [{ label: '', value: `and ${flags.length - 5} more` }] : []),
-      ...reports.slice(0, 5).map((r, i) => ({ label: i === 0 ? 'Reports overdue' : '', value: `${r.course} · ${f.day(r.starts_at)}${r.trainer ? ` (${r.trainer})` : ''}` })),
-      ...(reports.length > 5 ? [{ label: '', value: `and ${reports.length - 5} more` }] : []),
+    const sections = [
+      ...(flags.length
+        ? [
+            {
+              heading: `New flags · ${flags.length}`,
+              items: flags.slice(0, 5).map((x) => ({
+                title: `${x.first_name} ${x.last_name}`,
+                meta: `${x.cohort} · ${(flagText[x.rule] ?? (() => 'needs follow-up'))(x.details ?? {})}`,
+                tone: 'amber' as const,
+              })),
+              more: flags.length > 5 ? `and ${flags.length - 5} more` : undefined,
+            },
+          ]
+        : []),
+      ...(reports.length
+        ? [
+            {
+              heading: `Reports overdue · ${reports.length}`,
+              items: reports.slice(0, 5).map((r) => ({ title: r.course, meta: `Session on ${f.day(r.starts_at)}${r.trainer ? ` · ${r.trainer}` : ''}` })),
+              more: reports.length > 5 ? `and ${reports.length - 5} more` : undefined,
+            },
+          ]
+        : []),
     ]
     n += await deliver(deps, {
       organisationId: org.id,
@@ -390,8 +405,9 @@ async function digests(deps: SchedulerDeps, org: Org, now: Date) {
       email: {
         subject: `Synqop daily digest — ${f.day(now)}`,
         title: 'Your morning digest',
+        status: { label: `Daily digest · ${f.day(now)}`, tone: 'blue' },
         intro: (first) => `Hi ${first}, here’s what changed since yesterday at ${admin.time}.`,
-        details,
+        sections,
         buttonLabel: flags.length ? 'Open Needs attention' : 'Open session reports',
         footer: `Sent at ${admin.time} because the daily digest is on. Change it in Settings › Notifications.`,
       },
@@ -461,9 +477,12 @@ async function trainerDigests(deps: SchedulerDeps, org: Org, now: Date) {
           subject: `${total} submission${total === 1 ? '' : 's'} waiting for your grade`,
           title: 'Submissions to grade',
           intro: (first) => `Hi ${first}, these submissions are waiting for your grade, oldest deadline first.`,
-          details: [
-            ...waiting.slice(0, 6).map((q, i) => ({ label: i === 0 ? 'Waiting' : '', value: `${q.title} · ${q.cohort} — ${q.to_grade}` })),
-            ...(waiting.length > 6 ? [{ label: '', value: `and ${waiting.length - 6} more assignments` }] : []),
+          sections: [
+            {
+              heading: `Waiting for your grade · ${total}`,
+              items: waiting.slice(0, 6).map((q) => ({ title: q.title, meta: `${q.cohort} · ${q.to_grade} to grade` })),
+              more: waiting.length > 6 ? `and ${waiting.length - 6} more assignments` : undefined,
+            },
           ],
           buttonLabel: 'Open grading',
           footer: `Sent at ${org.digest} because grading reminders are on. Change them in Settings.`,
@@ -484,10 +503,17 @@ async function trainerDigests(deps: SchedulerDeps, org: Org, now: Date) {
           subject: people.size === 1 ? `${first.first_name} ${first.last_name} may need attention` : `${people.size} participants may need attention`,
           title: 'Participants who may need attention',
           intro: (name) => `Hi ${name}, these participants in the cohorts you teach were flagged since yesterday. Your programme team follows up; you may want to check in during your next session.`,
-          details: flags.slice(0, 6).map((x, i) => ({
-            label: i === 0 ? 'Flagged' : '',
-            value: `${x.first_name} ${x.last_name} · ${x.cohort} — ${(flagText[x.rule] ?? (() => 'needs follow-up'))(x.details ?? {})}`,
-          })),
+          sections: [
+            {
+              heading: `Flagged since yesterday · ${flags.length}`,
+              items: flags.slice(0, 6).map((x) => ({
+                title: `${x.first_name} ${x.last_name}`,
+                meta: `${x.cohort} · ${(flagText[x.rule] ?? (() => 'needs follow-up'))(x.details ?? {})}`,
+                tone: 'amber' as const,
+              })),
+              more: flags.length > 6 ? `and ${flags.length - 6} more` : undefined,
+            },
+          ],
           buttonLabel: 'Open my participants',
           footer: 'Flags are signals to check, not judgements. Change these emails in Settings.',
         },

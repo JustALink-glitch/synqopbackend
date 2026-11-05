@@ -50,13 +50,14 @@ export async function sendInvitationEmail(
 ): Promise<boolean> {
   const { text, html } = renderEmail({
     title: `You're invited to ${input.organisationName}`,
+    organisationName: input.organisationName,
     intro: `Hi ${input.firstName}, you've been added to ${input.organisationName} on Synqop as ${ROLE_LABEL[input.role] ?? 'a member'}. Set a password to get started.`,
     buttonLabel: 'Set your password',
     buttonUrl: input.link,
     note: `This link works once and expires in ${INVITATION_TTL_HOURS} hours. If you weren't expecting it, you can ignore this email.`,
   })
   try {
-    await mailer.send({ to: input.to, subject: `You're invited to ${input.organisationName} on Synqop`, text, html })
+    await mailer.send({ to: input.to, subject: `You're invited to ${input.organisationName} on Synqop`, text, html, fromName: input.organisationName })
     return true
   } catch (error) {
     console.error('Invitation email failed', error)

@@ -318,13 +318,14 @@ export function sessionRoutes(deps: AppDeps) {
     for (const person of people.filter((p) => p.by_email ?? EVENTS[p.role]?.find((e) => e.key === 'session_changed')?.email ?? true)) {
       const { text, html } = renderEmail({
         title: input.subject,
+        organisationName: input.organisationName,
+        status: input.subject.startsWith('Cancelled') ? { label: 'Session cancelled', tone: 'red' } : { label: 'Session changed', tone: 'amber' },
         intro: `Hi ${person.first_name}, ${input.intro(person.first_name)}`,
         buttonLabel: 'Open Synqop',
         buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
-        note: `Sent by ${input.organisationName} through Synqop.`,
       })
       try {
-        await deps.mailer.send({ to: person.email, subject: input.subject, text, html })
+        await deps.mailer.send({ to: person.email, subject: input.subject, text, html, fromName: input.organisationName })
         sent++
       } catch (error) {
         console.error('Session email failed', error)
@@ -728,14 +729,15 @@ export function sessionRoutes(deps: AppDeps) {
             if (!(person.by_email ?? EVENTS[person.role]?.find((e) => e.key === 'session_changed')?.email ?? true)) continue
             const { text, html } = renderEmail({
               title,
+              organisationName,
+              status: { label: theirs.length === 1 ? 'Session cancelled' : 'Sessions cancelled', tone: 'red' },
               intro: `Hi ${person.first_name}, ${theirs.length === 1 ? 'this session is' : 'these sessions are'} cancelled. Reason: ${body.reason}`,
               details: theirs.map((r, i) => ({ label: theirs.length === 1 ? 'Session' : `${i + 1}`, value: line(r) })),
               buttonLabel: 'Open Synqop',
               buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
-              note: `Sent by ${organisationName} through Synqop.`,
             })
             try {
-              await deps.mailer.send({ to: person.email, subject: title, text, html })
+              await deps.mailer.send({ to: person.email, subject: title, text, html, fromName: organisationName })
               emailed++
             } catch (error) {
               console.error('Session email failed', error)

@@ -9,3 +9,4 @@ coverage/
 supabase/.branches/
 supabase/.temp/
 supabase/signing_keys.json
+email-previews/

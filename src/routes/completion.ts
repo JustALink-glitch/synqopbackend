@@ -147,13 +147,14 @@ export async function issueCertificates(
       const subject = `Your ${settings.title.toLowerCase()} is ready`
       const { text, html } = renderEmail({
         title: subject,
+        organisationName: settings.org_name,
+        status: { label: 'Programme completed', tone: 'green' },
         intro: `Hi ${firstName}, you’ve completed ${e.cohort.programmeName} · ${e.cohort.name}. Congratulations — your certificate is ready to download.`,
         buttonLabel: 'View certificate',
         buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/participant/grades/certificate`,
-        note: `Sent by ${settings.org_name} through Synqop.`,
       })
       try {
-        await deps.mailer.send({ to: e.email, subject, text, html })
+        await deps.mailer.send({ to: e.email, subject, text, html, fromName: settings.org_name })
       } catch (error) {
         console.error('Certificate email failed', error)
       }

@@ -289,13 +289,14 @@ async function sendChangeEmail(
 ): Promise<boolean> {
   const { text, html } = renderEmail({
     title: input.title,
+    organisationName: input.organisationName,
     intro: `Hi ${input.firstName}, ${input.intro}`,
     buttonLabel: 'Open Synqop',
     buttonUrl: `${deps.appUrl.replace(/\/$/, '')}/sign-in`,
-    note: `If you have questions, reply to your programme team at ${input.organisationName}.`,
+    note: `If you have questions, contact your programme team at ${input.organisationName}.`,
   })
   try {
-    await deps.mailer.send({ to: input.to, subject: input.title, text, html })
+    await deps.mailer.send({ to: input.to, subject: input.title, text, html, fromName: input.organisationName })
     return true
   } catch (error) {
     console.error('Enrolment email failed', error)
